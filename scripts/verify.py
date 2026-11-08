@@ -44,29 +44,37 @@ def run_unit_test(test_file):
     env["PYTHONPATH"] = f"{test_dir}{os.pathsep}{existing_pythonpath}"
     env["PYTHONDONTWRITEBYTECODE"] = "1"
 
-    # 1. python -m pytest 시도 (pytest 설치 시)
+    # 1. pytest 가용 여부 사전 검사
+    has_pytest = False
     try:
-        res = subprocess.run(
-            [sys.executable, "-m", "pytest", "-q", test_name],
-            cwd=test_dir,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=15
-        )
-        if "No module named pytest" not in res.stderr and res.returncode in (0, 1):
+        import importlib.util
+        has_pytest = importlib.util.find_spec("pytest") is not None
+    except Exception:
+        has_pytest = False
+
+    if has_pytest:
+        try:
+            res = subprocess.run(
+                [sys.executable, "-m", "pytest", "-q", test_name],
+                cwd=test_dir,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=15
+            )
+            out = (res.stdout.strip() + "\n" + res.stderr.strip()).strip()
             return {
                 "runner": "pytest",
                 "pass": res.returncode == 0,
-                "output": (res.stdout.strip() + "\n" + res.stderr.strip()).strip(),
+                "output": out,
                 "returncode": res.returncode
             }
-    except (FileNotFoundError, PermissionError):
-        pass
-    except subprocess.TimeoutExpired:
-        return {"runner": "pytest", "pass": False, "output": "테스트 실행 시간 초과 (15초)", "returncode": -1}
+        except subprocess.TimeoutExpired:
+            return {"runner": "pytest", "pass": False, "output": "pytest 실행 시간 초과 (15초)", "returncode": -1}
+        except Exception as e:
+            return {"runner": "pytest", "pass": False, "output": f"pytest 실행 실패: {e}", "returncode": -1}
 
-    # 2. 파이썬 내장 unittest로 폴백
+    # 2. pytest 미설치 시 파이썬 내장 unittest로 실행
     try:
         res = subprocess.run(
             [sys.executable, "-m", "unittest", test_name],
@@ -76,16 +84,25 @@ def run_unit_test(test_file):
             text=True,
             timeout=15
         )
+        out = (res.stdout.strip() + "\n" + res.stderr.strip()).strip()
+        # Ran 0 tests 방어: 실제 테스트가 0개 실행된 경우 성공으로 오인하지 않음
+        if "Ran 0 tests" in out:
+            return {
+                "runner": "unittest",
+                "pass": False,
+                "output": f"실행된 테스트 케이스가 0개입니다:\n{out}",
+                "returncode": -1
+            }
         return {
             "runner": "unittest",
             "pass": res.returncode == 0,
-            "output": (res.stdout.strip() + "\n" + res.stderr.strip()).strip(),
+            "output": out,
             "returncode": res.returncode
         }
     except subprocess.TimeoutExpired:
-        return {"runner": "unittest", "pass": False, "output": "테스트 실행 시간 초과 (15초)", "returncode": -1}
+        return {"runner": "unittest", "pass": False, "output": "unittest 실행 시간 초과 (15초)", "returncode": -1}
     except Exception as e:
-        return {"runner": "unittest", "pass": False, "output": f"테스트 실행 실패: {e}", "returncode": -1}
+        return {"runner": "unittest", "pass": False, "output": f"unittest 실행 실패: {e}", "returncode": -1}
 
 def run_smoke_import(file_path):
     """모듈을 서브프로세스에서 안전하게 임포트하여 즉각적인 초기화 런타임 크래시를 검증합니다."""
@@ -188,10 +205,10 @@ def verify_file(file_path, run_tests=False, smoke=False):
             overall_success = False
             report["details"].append(f"ruff 실행 중 예외 발생: {str(e)}")
 
-        # mypy 정적 타입 검사 (설치된 경우 실행)
+        # mypy 정적 타입 검사 (설치된 경우 실행, 악성 플러그인 로드 방지를 위해 config-file 빈 파일 지정)
         try:
             m_res = subprocess.run(
-                ["mypy", "--ignore-missing-imports", file_path],
+                ["mypy", "--ignore-missing-imports", "--config-file", os.devnull, file_path],
                 capture_output=True,
                 text=True,
                 timeout=10

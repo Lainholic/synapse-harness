@@ -21,8 +21,8 @@ A successful check does not guarantee that code is completely defect-free. Exter
      ▼
 ┌──────────────────────────────────────────────┐
 │  Stage 1: Local Deterministic Check          │
-│  - Default: Pure static analysis (no code    │
-│    execution, safe on untrusted code)        │
+│  - Default: Pure static analysis (no smoke   │
+│    import or test execution by default)      │
 │  - Python compilation via isolated temp dir  │
 │  - Bytecode suppression (no __pycache__)     │
 │  - Ruff static analysis (enforcing --no-fix) │
@@ -97,8 +97,8 @@ python scripts/verify.py "/path/to/target_file.py" --smoke
 python scripts/verify.py "/path/to/target_file.py" --test
 ```
 
-> **Security Notice on Code Execution:**  
-> Both `--test` and `--smoke` execute code with the current user's privileges. Subprocesses and timeouts are helpful isolation barriers, but they are not security sandboxes. Do not use `--test` or `--smoke` on untrusted third-party code without dedicated container or sandbox isolation.
+> **Security Notice on Execution Boundaries:**  
+> By default, the verifier does not smoke-import the target or run its tests. External analyzers, their configuration and plugins, and the execution environment remain separate trust boundaries. Both `--test` and `--smoke` execute code with the current user's privileges; subprocesses and timeouts are helpful isolation barriers, but they are not security sandboxes. Use appropriate container or VM isolation when analyzing untrusted third-party code.
 
 Output is emitted in structured JSON:
 ```json
