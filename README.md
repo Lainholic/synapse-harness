@@ -1,67 +1,60 @@
-# Synapse Harness (시냅스 하네스)
+# Synapse Harness
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-green.svg)](https://www.python.org/)
-[![Compatible](https://img.shields.io/badge/Compatible-Claude%20Code%20%7C%20Cursor%20%7C%20Codex%20%7C%20Antigravity-orange.svg)](#)
 
 [English](README.md) | [한국어](README.ko.md)
 
-**Synapse Harness** is a production-grade adversarial cross-verification skill designed to eliminate **AI self-confirmation bias** and **correlated errors**.
+**Synapse Harness** is an AI agent skill that combines local deterministic checks with optional adversarial cross-verification.
 
-Instead of relying on prompt-only roleplay, Synapse Harness unifies **zero-overhead mechanical static linting** (AST compilation & legacy model hallucination sanitization) with **adversarial Red-Team AI audits (Devil's Advocate)** into a strict 3-stage validation pipeline.
+When AI models review code they wrote themselves, they often share the same blind spots and generate convincing justifications for incorrect implementations. Synapse Harness addresses this by running local syntax and lint checks first, followed by an optional adversarial critique from a separate reviewer persona or model when requested by the user.
 
----
-
-## ⚡ The Problem: Self-Confirmation Bias in AI Coding
-
-When an AI model reviews its own generated code, it inherently suffers from **self-confirmation bias**:
-1. It overlooks its own blind spots, missing edge cases, and boundary violations.
-2. It generates plausible-sounding explanations ("post-hoc rationalization") to defend incorrect code.
-3. Prompt-only "virtual reviewer" tricks (asking the same model to pretend to be a reviewer) often rubber-stamp flaws because they share the same underlying token distribution.
+A successful check does not guarantee that code is completely defect-free. External reviews may send code snippets or logs to external model APIs; review the scope and target before invoking external workers.
 
 ---
 
-## 🛡️ The 3-Stage Hybrid Pipeline
+## 🛡️ Architecture: 3-Stage Verification Pipeline
 
 ```
 [Target Code]
      │
      ▼
-┌───────────────────────────────────────────────┐
-│  Step 1: Mechanical Fact Check (0s latency)   │
-│  - Python AST byte-compile in isolated tmpdir │
-│  - Zero __pycache__ / .pyc workspace pollution│
-│  - Ruff static analysis integration           │
-│  - Legacy LLM hallucination sanitizer         │
-└──────────────────────┬────────────────────────┘
+┌──────────────────────────────────────────────┐
+│  Stage 1: Local Deterministic Check          │
+│  - Python compilation via isolated temp dir  │
+│  - Bytecode suppression (no __pycache__)     │
+│  - Ruff static analysis (enforcing --no-fix) │
+│  - Configured model-name string verification │
+└──────────────────────┬───────────────────────┘
                        │ PASS
                        ▼
-┌───────────────────────────────────────────────┐
-│  Step 2: Adversarial Red-Team Audit (External)│
-│  - Devil's Advocate persona                   │
-│  - Attack surface: memory leaks, race conds,  │
-│    unhandled edge cases, resource exhaustion  │
-│  - No compliments; flaws-only critique        │
-└──────────────────────┬────────────────────────┘
-                       │ Critique
+┌──────────────────────────────────────────────┐
+│  Stage 2: Adversarial Audit (Optional)       │
+│  - Devil's Advocate reviewer persona         │
+│  - Evaluates race conditions, leaks, edge    │
+│    cases, and resource boundaries            │
+│  - Executed only on explicit user request    │
+└──────────────────────┬───────────────────────┘
+                       │ Findings
                        ▼
-┌───────────────────────────────────────────────┐
-│  Step 3: Final Judge & Synthesis              │
-│  - Cross-examine user intent vs facts vs audit│
-│  - Dismiss ungrounded or speculative attacks  │
-│  - Strict separation of audit vs code editing │
-└───────────────────────────────────────────────┘
+┌──────────────────────────────────────────────┐
+│  Stage 3: Evidence-Grounded Synthesis        │
+│  - Compares original intent, compiler logs,   │
+│    and adversarial critique findings         │
+│  - Dismisses speculative or invalid claims   │
+│  - Produces structured review report         │
+└──────────────────────────────────────────────┘
 ```
 
 ---
 
-## 🚀 1-Minute Quick Start
+## 🚀 Quick Start
 
 ### Installation
 
-Drop the repository into your preferred AI agent skill directory:
+Clone the repository into your agent's skill directory:
 
-**For Codex / Antigravity:**
+**For Codex / Antigravity / Shared Agents:**
 ```bash
 git clone https://github.com/Lainholic/synapse-harness.git ~/.agents/skills/synapse-harness
 ```
@@ -71,64 +64,98 @@ git clone https://github.com/Lainholic/synapse-harness.git ~/.agents/skills/syna
 git clone https://github.com/Lainholic/synapse-harness.git ~/.claude/skills/synapse-harness
 ```
 
-**For Cursor (project scope):**
+**For Cursor (Workspace scope):**
 ```bash
 git clone https://github.com/Lainholic/synapse-harness.git .cursor/skills/synapse-harness
 ```
 
 ---
 
-## 💻 Usage
+## 💻 CLI Usage
 
-Once installed, simply prompt your AI agent:
+You can also run the deterministic verification tools directly from your terminal:
 
-```text
-"Run synapse-harness on src/auth/token_verifier.py"
-```
-```text
-"Harness audit this pull request before merging"
-```
-```text
-"Use synapse-harness to stress-test our state machine transitions"
-```
-
-### Standalone CLI Verification
-
-You can also run the mechanical linter directly from your command line:
+### 1. Verify a File
+Run syntax, encoding, and lint checks against a target file:
 
 ```bash
-# Verify syntax, encoding, and model naming integrity
-python scripts/verify.py path/to/your/file.py
+# Navigate to the synapse-harness directory
+cd path/to/synapse-harness
 
-# Scan and sanitize outdated model hallucination strings
-python scripts/model_sanitizer.py path/to/project/ --fix
+# Run verification
+python scripts/verify.py "/path/to/target_file.py"
 ```
+
+Output is emitted in structured JSON:
+```json
+{
+  "success": true,
+  "report": {
+    "file": "/path/to/target_file.py",
+    "extension": ".py",
+    "encoding_pass": true,
+    "syntax_pass": true,
+    "linter_status": "pass",
+    "details": [
+      "py_compile 구문 검사 PASS (오염 없는 격리 컴파일)",
+      "ruff 정적 린터 PASS (코드 무결)"
+    ]
+  }
+}
+```
+
+### 2. Check Legacy Model Strings (Read-Only)
+Check whether a file or directory contains outdated LLM model strings:
+
+```bash
+python scripts/model_sanitizer.py "/path/to/project_dir"
+```
+
+> **Warning on Auto-Fix:**
+> Running `python scripts/model_sanitizer.py "/path/to/project_dir" --fix` modifies files directly on disk. Only use `--fix` after taking backups or verifying version control status.
 
 ---
 
-## 📁 Repository Structure
+## ⚠️ Known Limitations & Boundaries
 
-```
-synapse-harness/
-├── SKILL.md                  # Agent skill definition and execution contract
-├── LICENSE                   # MIT License
-├── README.md                 # English documentation
-├── README.ko.md              # Korean documentation
-└── scripts/
-    ├── verify.py             # Mechanical AST isolated compiler & linter
-    └── model_sanitizer.py    # LLM hallucination sanitizer & auto-fixer
-```
+We believe in engineering transparency. Please review the following limitations before relying on Synapse Harness in your workflows:
+
+1. **Python-Centric Static Analysis**:
+   - Comprehensive AST compilation (`py_compile`) and linter checks (`ruff`) are currently fully implemented for **Python only**.
+   - Other formats (`.json`, `.md`, `.js`, `.ts`, `.html`) are verified for UTF-8 integrity and schema validity (for JSON), but language-specific linters (e.g. ESLint, TypeScript compiler) are not yet integrated into Stage 1.
+2. **Static Syntax vs. Runtime Logic**:
+   - `verify.py` checks syntax and static conventions; it does not execute test suites or verify runtime behavior. Code with valid syntax but incorrect business logic will pass Stage 1.
+3. **Agent-Mediated Stages 2 & 3**:
+   - Stage 1 runs autonomously as a standalone CLI tool.
+   - Stages 2 and 3 require an agent environment (such as Antigravity, Claude, or custom LLM runners) interpreting `SKILL.md` to trigger adversarial reviews.
+4. **Context-Insensitive Model String Matching**:
+   - `model_sanitizer.py` matches strings by pattern. It does not differentiate between actual LLM configuration calls and historical citations or test fixture data.
+5. **Data Boundary & External API Consideration**:
+   - When Stage 2 is executed via third-party AI models, code snippets and logs may be transmitted over the network. Always verify organizational compliance before using external workers on proprietary codebases.
 
 ---
 
-## 📜 Operating Rules
+## 🗺️ Roadmap
 
-1. **Strict Separation of Audit vs Modification**: An audit request authorizes inspection only. The agent never silently modifies code unless explicitly instructed to apply approved fixes.
-2. **Evidence Before Assertions**: Every critique must cite concrete triggers, line numbers, or reproducible failure modes.
-3. **Zero Workspace Contamination**: Mechanical verification runs in ephemeral memory/tempfs to ensure zero `.pyc` or `__pycache__` artifacts are left behind.
+- [ ] Add ESLint and TypeScript compiler (`tsc`) passes for JavaScript and TypeScript files.
+- [ ] Add unified standalone CLI command (`python -m synapse_harness run <target>`) with pluggable LLM backends.
+- [ ] Support custom AST lint rules and ignore pragmas.
+- [ ] Add pre-commit git hook configuration.
+
+---
+
+## 🤝 Contributing
+
+Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on code style, tests, and documentation synchronization.
+
+---
+
+## 🔒 Security
+
+For vulnerability disclosures and security policies, please see [SECURITY.md](SECURITY.md).
 
 ---
 
 ## 📄 License
 
-Distributed under the [MIT License](LICENSE). Copyright (c) 2026 Lainholic.
+This project is licensed under the [MIT License](LICENSE) - see the LICENSE file for details.
