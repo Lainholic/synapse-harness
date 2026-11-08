@@ -24,6 +24,10 @@ AI 모델이 자신이 직접 작성한 코드를 스스로 검토할 때, 동�
 │  - 임시 디렉터리 기반 Python 격리 컴파일     │
 │  - 바이트코드 억제 (__pycache__ 잔여 방지)   │
 │  - Ruff 정적 분석 (--no-fix 옵션 강제)       │
+│  - Mypy 정적 타입 검사 연동 (설치 시)        │
+│  - 스모크 임포트 실행 검증 (--smoke)         │
+│  - 대응 단위 테스트 자동 탐색 및 실행        │
+│    (pytest/unittest로 런타임 로직 결함 검출) │
 │  - 설정된 구형 모델명 문자열 검사            │
 └──────────────────────┬───────────────────────┘
                        │ PASS
@@ -80,8 +84,14 @@ git clone https://github.com/Lainholic/synapse-harness.git .cursor/skills/synaps
 # synapse-harness 저장소 디렉터리로 이동
 cd path/to/synapse-harness
 
-# 검증 실행
+# 기본 구문 및 정적 린터 검증
 python scripts/verify.py "/path/to/target_file.py"
+
+# 스모크 임포트 검증 추가 (초기화 런타임 크래시 여부 검출)
+python scripts/verify.py "/path/to/target_file.py" --smoke
+
+# 단위 테스트 강제 실행 (대응하는 test_<name>.py 자동 탐색 및 실행)
+python scripts/verify.py "/path/to/target_file.py" --test
 ```
 
 출력 결과는 구조화된 JSON 형태로 제공됩니다:
@@ -121,8 +131,8 @@ python scripts/model_sanitizer.py "/path/to/project_dir"
 1. **파이썬 중심의 정적 분석**:
    - 정밀 AST 컴파일(`py_compile`)과 정적 린터(`ruff`)는 현재 **Python 파일에 대해서만 완전히 지원**됩니다.
    - 기타 형식(`.json`, `.md`, `.js`, `.ts`, `.html`)은 UTF-8 인코딩 및 JSON 문법 검사만 수행하며, ESLint나 tsc 등의 타 언어 전용 컴파일러는 1단계에 아직 내장되어 있지 않습니다.
-2. **정적 구문 검사와 런타임 로직의 차이**:
-   - `verify.py`는 코드의 문법과 정적 규칙만 검사하며, 테스트 코드를 직접 실행하지 않습니다. 문법은 올바르지만 비즈니스 로직이 틀린 코드는 1단계를 통과할 수 있습니다.
+2. **정적 구문 검사와 런타임 로직의 보완**:
+   - `verify.py`는 대응하는 단위 테스트(`test_<name>.py`)를 자동 탐색하여 `pytest` 또는 내장 `unittest`로 즉시 실행하므로, 테스트가 구비된 파일의 경우 1단계에서 런타임 로직 결함을 기계적으로 잡아냅니다. 단, 단위 테스트 코드가 전혀 작성되지 않은 파일의 경우 정적 문법만으로는 비즈니스 계산 착오를 가려낼 수 없으므로 테스트 코드 작성 또는 2단계 AI 검토가 필요합니다.
 3. **2단계 및 3단계의 에이전트 의존성**:
    - 1단계는 독립된 파이썬 CLI로 단독 실행됩니다.
    - 2단계와 3단계는 `SKILL.md`를 해석할 수 있는 AI 에이전트 환경(Antigravity, Claude, Cursor 등) 내에서 실행됩니다.

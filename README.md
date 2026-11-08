@@ -24,6 +24,10 @@ A successful check does not guarantee that code is completely defect-free. Exter
 │  - Python compilation via isolated temp dir  │
 │  - Bytecode suppression (no __pycache__)     │
 │  - Ruff static analysis (enforcing --no-fix) │
+│  - Mypy static type verification (if avail)  │
+│  - Isolated smoke import check (--smoke)     │
+│  - Auto-paired test discovery & execution    │
+│    (runs pytest/unittest to catch logic bugs)│
 │  - Configured model-name string verification │
 └──────────────────────┬───────────────────────┘
                        │ PASS
@@ -82,8 +86,14 @@ Run syntax, encoding, and lint checks against a target file:
 # Navigate to the synapse-harness directory
 cd path/to/synapse-harness
 
-# Run verification
+# Basic syntax & lint check
 python scripts/verify.py "/path/to/target_file.py"
+
+# Include runtime smoke-test (verifies clean module import without initialization crashes)
+python scripts/verify.py "/path/to/target_file.py" --smoke
+
+# Force unit test execution (auto-discovers test_<name>.py or paired tests)
+python scripts/verify.py "/path/to/target_file.py" --test
 ```
 
 Output is emitted in structured JSON:
@@ -124,7 +134,7 @@ We believe in engineering transparency. Please review the following limitations 
    - Comprehensive AST compilation (`py_compile`) and linter checks (`ruff`) are currently fully implemented for **Python only**.
    - Other formats (`.json`, `.md`, `.js`, `.ts`, `.html`) are verified for UTF-8 integrity and schema validity (for JSON), but language-specific linters (e.g. ESLint, TypeScript compiler) are not yet integrated into Stage 1.
 2. **Static Syntax vs. Runtime Logic**:
-   - `verify.py` checks syntax and static conventions; it does not execute test suites or verify runtime behavior. Code with valid syntax but incorrect business logic will pass Stage 1.
+   - `verify.py` automatically discovers and runs paired unit tests (`test_<name>.py`) using `pytest` or Python's built-in `unittest` to catch runtime calculation and logic flaws directly in Stage 1. However, if no unit test exists for a given file, semantic logic flaws cannot be determined without test coverage or Stage 2 reviewer critique.
 3. **Agent-Mediated Stages 2 & 3**:
    - Stage 1 runs autonomously as a standalone CLI tool.
    - Stages 2 and 3 require an agent environment (such as Antigravity, Claude, or custom LLM runners) interpreting `SKILL.md` to trigger adversarial reviews.
