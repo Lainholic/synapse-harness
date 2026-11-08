@@ -20,7 +20,7 @@ except ImportError:
     scan_text = None
 
 def find_paired_test(file_path):
-    """대상 파이썬 파일에 대응하는 단위 테스트 파일을 자동 탐색합니다."""
+    """대상 파이썬 파일에 대응하는 단위 테스트 파일을 탐색합니다."""
     file_dir = os.path.dirname(file_path)
     base_name = os.path.splitext(os.path.basename(file_path))[0]
     
@@ -36,29 +36,31 @@ def find_paired_test(file_path):
     return None
 
 def run_unit_test(test_file):
-    """pytest 또는 내장 unittest로 테스트 파일을 격리 실행합니다."""
+    """동일한 Python 인터프리터의 pytest 또는 unittest로 테스트 파일을 격리 실행합니다."""
     test_dir = os.path.dirname(os.path.abspath(test_file))
+    test_name = os.path.basename(test_file)
     env = os.environ.copy()
     existing_pythonpath = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = f"{test_dir}{os.pathsep}{existing_pythonpath}"
     env["PYTHONDONTWRITEBYTECODE"] = "1"
 
-    # 1. pytest 시도
+    # 1. python -m pytest 시도 (pytest 설치 시)
     try:
         res = subprocess.run(
-            ["pytest", "-q", os.path.basename(test_file)],
+            [sys.executable, "-m", "pytest", "-q", test_name],
             cwd=test_dir,
             env=env,
             capture_output=True,
             text=True,
             timeout=15
         )
-        return {
-            "runner": "pytest",
-            "pass": res.returncode == 0,
-            "output": (res.stdout.strip() + "\n" + res.stderr.strip()).strip(),
-            "returncode": res.returncode
-        }
+        if "No module named pytest" not in res.stderr and res.returncode in (0, 1):
+            return {
+                "runner": "pytest",
+                "pass": res.returncode == 0,
+                "output": (res.stdout.strip() + "\n" + res.stderr.strip()).strip(),
+                "returncode": res.returncode
+            }
     except (FileNotFoundError, PermissionError):
         pass
     except subprocess.TimeoutExpired:
@@ -67,7 +69,7 @@ def run_unit_test(test_file):
     # 2. 파이썬 내장 unittest로 폴백
     try:
         res = subprocess.run(
-            [sys.executable, "-m", "unittest", os.path.basename(test_file)],
+            [sys.executable, "-m", "unittest", test_name],
             cwd=test_dir,
             env=env,
             capture_output=True,
@@ -87,16 +89,18 @@ def run_unit_test(test_file):
 
 def run_smoke_import(file_path):
     """모듈을 서브프로세스에서 안전하게 임포트하여 즉각적인 초기화 런타임 크래시를 검증합니다."""
+    # 경로를 문자열에 직접 삽입하지 않고 sys.argv[1]로 안전하게 전달
     code = (
         "import sys, importlib.util;"
         "sys.dont_write_bytecode = True;"
-        f"spec = importlib.util.spec_from_file_location('__harness_smoke__', r'''{file_path}''');"
+        "target = sys.argv[1];"
+        "spec = importlib.util.spec_from_file_location('__harness_smoke__', target);"
         "mod = importlib.util.module_from_spec(spec);"
         "spec.loader.exec_module(mod);"
     )
     try:
         res = subprocess.run(
-            [sys.executable, "-c", code],
+            [sys.executable, "-c", code, file_path],
             capture_output=True,
             text=True,
             timeout=5
@@ -140,7 +144,7 @@ def verify_file(file_path, run_tests=False, smoke=False):
     
     overall_success = True
 
-    # 1. 파이썬 문법, 린터, 타입, 런타임 보완 검사
+    # 1. 파이썬 문법, 린터, 타입, 옵션별 런타임 검사
     if ext == ".py":
         report["encoding_pass"] = True
         # __pycache__ 잔여 방지를 위해 임시 디렉터리에서 컴파일 수행
@@ -208,8 +212,10 @@ def verify_file(file_path, run_tests=False, smoke=False):
             report["details"].append("mypy 검사 시간 초과(10초)")
         except Exception as e:
             report["type_check_status"] = "error"
+            overall_success = False
+            report["details"].append(f"mypy 실행 중 예외 발생: {str(e)}")
 
-        # 스모크 테스트 (임포트 런타임 초기화 검증)
+        # 스모크 테스트 (사용자가 명시적으로 --smoke를 요청한 경우에만 실행)
         if smoke:
             smoke_res = run_smoke_import(file_path)
             if smoke_res["pass"]:
@@ -220,20 +226,27 @@ def verify_file(file_path, run_tests=False, smoke=False):
                 overall_success = False
                 report["details"].append(f"[스모크 테스트 FAIL] 임포트 시 런타임 크래시 발생:\n{smoke_res['output']}")
 
-        # 단위 테스트 자동 탐색 및 실행
-        paired_test = find_paired_test(file_path)
-        if run_tests or paired_test:
+        # 단위 테스트 (사용자가 명시적으로 --test를 요청한 경우에만 실행)
+        if run_tests:
+            paired_test = find_paired_test(file_path)
             target_test = paired_test if paired_test else file_path
-            test_res = run_unit_test(target_test)
-            if test_res["pass"]:
-                report["test_status"] = "pass"
-                report["details"].append(f"단위 테스트 실행 PASS ({test_res['runner']}: {os.path.basename(target_test)})")
+            
+            # 대상 파일이 test_ 로 시작하거나 대응 테스트가 존재하는 경우에만 실행
+            base = os.path.basename(target_test).lower()
+            if base.startswith("test_") or base.endswith("_test.py"):
+                test_res = run_unit_test(target_test)
+                if test_res["pass"]:
+                    report["test_status"] = "pass"
+                    report["details"].append(f"단위 테스트 실행 PASS ({test_res['runner']}: {os.path.basename(target_test)})")
+                else:
+                    report["test_status"] = "failed"
+                    overall_success = False
+                    report["details"].append(f"[단위 테스트 FAIL] ({test_res['runner']}):\n{test_res['output']}")
             else:
-                report["test_status"] = "failed"
-                overall_success = False
-                report["details"].append(f"[단위 테스트 FAIL] 런타임 로직 결함 감지 ({test_res['runner']}):\n{test_res['output']}")
+                report["test_status"] = "not_found"
+                report["details"].append("대응하는 단위 테스트 파일(test_*.py)을 찾지 못했습니다.")
 
-    # 2. JSON 파싱 검사
+    # 2. JSON 파싱 검사 (문법 파싱)
     elif ext == ".json":
         try:
             with open(file_path, "r", encoding="utf-8") as f:
@@ -241,7 +254,7 @@ def verify_file(file_path, run_tests=False, smoke=False):
             report["encoding_pass"] = True
             report["syntax_pass"] = True
             report["linter_status"] = "pass"
-            report["details"].append("JSON 파싱 및 구문 검사 PASS")
+            report["details"].append("JSON 구문 파싱 PASS")
         except UnicodeDecodeError as e:
             report["encoding_pass"] = False
             report["syntax_pass"] = False
@@ -312,8 +325,8 @@ def verify_file(file_path, run_tests=False, smoke=False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Synapse Harness 결정론적 기계 검증 엔진")
     parser.add_argument("target", help="검증할 대상 파일 경로")
-    parser.add_argument("--test", action="store_true", help="대응하는 단위 테스트를 자동 탐색하여 실행합니다.")
-    parser.add_argument("--smoke", action="store_true", help="격리된 서브프로세스에서 모듈 임포트를 시험하여 초기화 크래시를 검증합니다.")
+    parser.add_argument("--test", action="store_true", help="명시적 옵션: 대응하는 단위 테스트(test_*.py)를 탐색하여 안전하게 실행합니다.")
+    parser.add_argument("--smoke", action="store_true", help="명시적 옵션: 격리된 서브프로세스에서 모듈 임포트를 시험하여 초기화 크래시를 검증합니다.")
     args = parser.parse_args()
 
     result = verify_file(args.target, run_tests=args.test, smoke=args.smoke)

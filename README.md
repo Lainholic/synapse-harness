@@ -21,14 +21,15 @@ A successful check does not guarantee that code is completely defect-free. Exter
      ▼
 ┌──────────────────────────────────────────────┐
 │  Stage 1: Local Deterministic Check          │
+│  - Default: Pure static analysis (no code    │
+│    execution, safe on untrusted code)        │
 │  - Python compilation via isolated temp dir  │
 │  - Bytecode suppression (no __pycache__)     │
 │  - Ruff static analysis (enforcing --no-fix) │
 │  - Mypy static type verification (if avail)  │
-│  - Isolated smoke import check (--smoke)     │
-│  - Auto-paired test discovery & execution    │
-│    (runs pytest/unittest to catch logic bugs)│
 │  - Configured model-name string verification │
+│  - Opt-in --smoke: Isolated import check     │
+│  - Opt-in --test: Paired test execution      │
 └──────────────────────┬───────────────────────┘
                        │ PASS
                        ▼
@@ -86,15 +87,18 @@ Run syntax, encoding, and lint checks against a target file:
 # Navigate to the synapse-harness directory
 cd path/to/synapse-harness
 
-# Basic syntax & lint check
+# Default: Safe static analysis (Syntax & lint check, zero code execution)
 python scripts/verify.py "/path/to/target_file.py"
 
-# Include runtime smoke-test (verifies clean module import without initialization crashes)
+# Opt-in: Runtime smoke-test (verifies clean module import without initialization crashes)
 python scripts/verify.py "/path/to/target_file.py" --smoke
 
-# Force unit test execution (auto-discovers test_<name>.py or paired tests)
+# Opt-in: Unit test execution (discovers and runs paired test_<name>.py)
 python scripts/verify.py "/path/to/target_file.py" --test
 ```
+
+> **Security Notice on Code Execution:**  
+> Both `--test` and `--smoke` execute code with the current user's privileges. Subprocesses and timeouts are helpful isolation barriers, but they are not security sandboxes. Do not use `--test` or `--smoke` on untrusted third-party code without dedicated container or sandbox isolation.
 
 Output is emitted in structured JSON:
 ```json
@@ -132,9 +136,10 @@ We believe in engineering transparency. Please review the following limitations 
 
 1. **Python-Centric Static Analysis**:
    - Comprehensive AST compilation (`py_compile`) and linter checks (`ruff`) are currently fully implemented for **Python only**.
-   - Other formats (`.json`, `.md`, `.js`, `.ts`, `.html`) are verified for UTF-8 integrity and schema validity (for JSON), but language-specific linters (e.g. ESLint, TypeScript compiler) are not yet integrated into Stage 1.
-2. **Static Syntax vs. Runtime Logic**:
-   - `verify.py` automatically discovers and runs paired unit tests (`test_<name>.py`) using `pytest` or Python's built-in `unittest` to catch runtime calculation and logic flaws directly in Stage 1. However, if no unit test exists for a given file, semantic logic flaws cannot be determined without test coverage or Stage 2 reviewer critique.
+   - Other formats (`.json`, `.md`, `.js`, `.ts`, `.html`) are verified for UTF-8 integrity and syntax parsing (for JSON). Dedicated language linters (e.g. ESLint, TypeScript compiler) are not yet integrated into Stage 1.
+2. **Static Syntax vs. Opt-In Runtime Verification**:
+   - By default, `verify.py` strictly performs non-executing static analysis.
+   - When explicitly opted-in via `--test`, it discovers and executes paired unit tests (`test_<name>.py`) using `pytest` or Python's built-in `unittest`. If no unit test exists or `--test` is omitted, runtime logic flaws cannot be determined without test coverage or Stage 2 reviewer critique.
 3. **Agent-Mediated Stages 2 & 3**:
    - Stage 1 runs autonomously as a standalone CLI tool.
    - Stages 2 and 3 require an agent environment (such as Antigravity, Claude, or custom LLM runners) interpreting `SKILL.md` to trigger adversarial reviews.
