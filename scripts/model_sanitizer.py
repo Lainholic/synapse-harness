@@ -12,6 +12,14 @@ import tempfile
 # __pycache__ 잔여 생성을 원천 차단
 sys.dont_write_bytecode = True
 
+# Windows 콘솔 및 다국어 CI 환경에서 UTF-8 입출력 보장
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 # 디렉터리 순회 시 제외할 디렉터리 및 파일 목록
 IGNORED_DIRS = {
     ".git", ".svn", ".hg",

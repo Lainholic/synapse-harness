@@ -141,17 +141,17 @@ class TestSynapseHarness(unittest.TestCase):
         valid_path = os.path.join(BASE_DIR, "tests", "sample_valid.py")
         invalid_path = os.path.join(BASE_DIR, "tests", "sample_syntax_error.py")
         
-        proc_ok = subprocess.run([sys.executable, script_path, valid_path], capture_output=True, text=True)
-        self.assertEqual(proc_ok.returncode, 0)
+        proc_ok = subprocess.run([sys.executable, script_path, valid_path], capture_output=True, text=True, encoding="utf-8", errors="replace")
+        self.assertEqual(proc_ok.returncode, 0, f"Expected 0, stderr: {proc_ok.stderr}")
         
-        proc_err = subprocess.run([sys.executable, script_path, invalid_path], capture_output=True, text=True)
-        self.assertEqual(proc_err.returncode, 1)
+        proc_err = subprocess.run([sys.executable, script_path, invalid_path], capture_output=True, text=True, encoding="utf-8", errors="replace")
+        self.assertEqual(proc_err.returncode, 1, f"Expected 1, stderr: {proc_err.stderr}")
 
     def test_cli_non_py_test_flag_rejection(self):
         script_path = os.path.join(SCRIPTS_DIR, "verify.py")
         readme_path = os.path.join(BASE_DIR, "README.md")
-        proc = subprocess.run([sys.executable, script_path, readme_path, "--test"], capture_output=True, text=True)
-        self.assertEqual(proc.returncode, 1)
+        proc = subprocess.run([sys.executable, script_path, readme_path, "--test"], capture_output=True, text=True, encoding="utf-8", errors="replace")
+        self.assertEqual(proc.returncode, 1, f"Expected 1, stderr: {proc.stderr}")
         data = json.loads(proc.stdout)
         self.assertFalse(data["success"])
         self.assertEqual(data["report"]["test_status"], "unsupported")

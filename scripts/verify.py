@@ -11,6 +11,14 @@ import xml.etree.ElementTree as ET
 # __pycache__ 잔여 생성을 원천 차단
 sys.dont_write_bytecode = True
 
+# Windows 콘솔 및 다국어 CI 환경에서 UTF-8 입출력 보장
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 # 같은 디렉터리의 model_sanitizer 모듈 동적 로드
 script_dir = os.path.dirname(os.path.abspath(__file__))
 if script_dir not in sys.path:
