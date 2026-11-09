@@ -6,6 +6,7 @@ import tempfile
 import py_compile
 import subprocess
 import argparse
+import xml.etree.ElementTree as ET
 
 # __pycache__ 잔여 생성을 원천 차단
 sys.dont_write_bytecode = True
@@ -36,14 +37,37 @@ def find_paired_test(file_path):
             return cand
     return None
 
+def parse_pytest_xml(xml_path):
+    """JUnit XML 결과 파일을 직접 파싱하여 텍스트 출력 의존성 없는 구조화된 판정을 내립니다."""
+    try:
+        tree = ET.parse(xml_path)
+        root = tree.getroot()
+        # root can be <testsuites> or <testsuite>
+        suite = root if root.tag == "testsuite" else root.find("testsuite")
+        if suite is None:
+            suite = root
+        
+        tests = int(suite.attrib.get("tests", 0))
+        failures = int(suite.attrib.get("failures", 0))
+        errors = int(suite.attrib.get("errors", 0))
+        skipped = int(suite.attrib.get("skipped", 0))
+        
+        if tests == 0 or tests == skipped:
+            return False, f"실행된 유효 테스트가 없거나 전부 건너뛰어졌습니다 (tests={tests}, skipped={skipped})"
+            
+        if failures > 0 or errors > 0:
+            return False, f"테스트 실패 또는 오류 발생 (failures={failures}, errors={errors})"
+            
+        return True, f"JUnit XML 구조 판정 성공 (tests={tests}, skipped={skipped}, failures={failures}, errors={errors})"
+    except Exception as e:
+        return None, f"XML 파싱 실패: {e}"
+
 def parse_pytest_output(returncode, out):
     """pytest 터미널 출력에서 공식 요약 라인(summary line)만을 역순 탐색하여 엄격히 판정합니다."""
     lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
     if not lines:
         return False, "[테스트 미실행] 출력이 비어 있습니다."
         
-    # pytest 공식 요약 라인 형식 (임의 단어 허용 금지, 공식 카운터 키워드 화이트리스트 엄격 적용):
-    # 예: '= 10 passed in 0.15s =' 또는 '10 passed, 1 skipped in 0.15s'
     kw = r"(?:passed|skipped|failed|errors?|xfailed|xpassed|warnings?)"
     item = rf"\d+\s+{kw}"
     summary_pattern = re.compile(
@@ -52,7 +76,6 @@ def parse_pytest_output(returncode, out):
         rf"|no tests ran in\s+[\d\.]+s)$"
     )
     
-    # stderr 경고문 등이 뒤에 붙더라도 역순으로 엄격한 공식 요약 라인만 탐색
     summary_line = None
     for ln in reversed(lines):
         if summary_pattern.match(ln):
@@ -62,47 +85,52 @@ def parse_pytest_output(returncode, out):
     if not summary_line:
         return False, f"[요약 누락] 유효한 pytest 실행 요약 라인을 찾을 수 없습니다:\n{out}"
         
-    # 공식 요약 라인 내에서만 pass 및 zero/skip 검증
+    # 공식 요약 라인 내에서 판정 (실패/오류 카운터 존재 시 즉시 실패)
     m_pass = re.search(r"\b([1-9]\d*)\s+passed\b", summary_line)
+    m_fail = re.search(r"\b([1-9]\d*)\s+(?:failed|errors?)\b", summary_line)
     m_zero_pass = re.search(r"\b0\s+passed\b", summary_line)
     has_no_tests = "no tests ran" in summary_line
     
+    # 모순되거나 실패 카운터가 있는 경우 배제
+    if m_fail:
+        return False, f"[테스트 실패] 요약 라인에 실패/오류가 보고되었습니다: {summary_line}"
+        
     passed = (returncode == 0) and bool(m_pass) and not bool(m_zero_pass) and not has_no_tests
     return passed, out if passed else f"[테스트 미실행 또는 실패]\n{out}"
 
 def parse_unittest_output(returncode, out):
-    """unittest 출력의 엄격한 요약 블록(^Ran N tests...$ + ^OK/FAILED...$)을 일체형으로 정밀 파싱합니다."""
+    """unittest 출력의 엄격한 요약 블록을 파싱하여 OK (expected failures 등)를 포함한 결과를 정밀 검증합니다."""
     lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
     if not lines:
         return False, "[테스트 미실행] 출력이 비어 있습니다."
 
-    # 줄 시작(^)과 줄 끝($)을 엄격히 강제하여, 진행 메시지(progress: Ran...)나 가짜 OK 라인(OK: continued) 오탐 원천 차단
+    # 줄 시작(^)과 줄 끝($)을 엄격히 강제하며, OK 뒤에 괄호로 오는 expected failures, skipped 등 모든 공식 상태를 포괄
     pattern = re.compile(
         r"^Ran\s+(\d+)\s+tests?\s+in\s+[\d\.]+s\s*$\n"
-        r"^(OK(?:\s*\(skipped=\d+\))?|FAILED(?:\s*\(.*?\))?)\s*$",
+        r"^(OK(?:\s*\(.*?\))?|FAILED(?:\s*\(.*?\))?)\s*$",
         re.MULTILINE
     )
     summary_blocks = pattern.findall(out)
     if not summary_blocks:
         return False, f"[요약 누락] 유효한 unittest 실행 요약 블록(^Ran N tests...$ + ^OK/FAILED$)이 없습니다:\n{out}"
         
-    # 마지막 요약 블록을 신뢰
     ran_count_str, result_status = summary_blocks[-1]
     ran_count = int(ran_count_str)
     
     if ran_count == 0:
         return False, f"실행된 테스트 케이스가 0개입니다:\n{out}"
         
-    # 전부 skipped 방어: OK (skipped=N) 에서 N == ran_count 인 경우
+    # 전부 skipped 방어: skipped=N 에서 N == ran_count 이고 다른 유효 실행(expected failures 등)이 없는 경우
     m_skip = re.search(r"skipped=(\d+)", result_status)
-    if m_skip and int(m_skip.group(1)) == ran_count:
+    m_expected = re.search(r"expected failures=(\d+)", result_status)
+    if m_skip and int(m_skip.group(1)) == ran_count and not m_expected:
         return False, f"실행된 유효 테스트가 모두 건너뛰어졌습니다 (전부 skipped={ran_count}):\n{out}"
 
     passed = (returncode == 0) and result_status.startswith("OK")
     return passed, out if passed else f"[테스트 실패]\n{out}"
 
 def run_unit_test(test_file):
-    """동일한 Python 인터프리터의 pytest 또는 unittest로 테스트 파일을 격리 실행합니다."""
+    """동일한 Python 인터프리터의 pytest(JUnit XML 우선) 또는 unittest로 테스트 파일을 격리 실행합니다."""
     test_dir = os.path.dirname(os.path.abspath(test_file))
     test_name = os.path.basename(test_file)
     env = os.environ.copy()
@@ -119,27 +147,42 @@ def run_unit_test(test_file):
         has_pytest = False
 
     if has_pytest:
-        try:
-            res = subprocess.run(
-                [sys.executable, "-m", "pytest", "-q", test_name],
-                cwd=test_dir,
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=15
-            )
-            out = (res.stdout.strip() + "\n" + res.stderr.strip()).strip()
-            passed, formatted_output = parse_pytest_output(res.returncode, out)
-            return {
-                "runner": "pytest",
-                "pass": passed,
-                "output": formatted_output,
-                "returncode": res.returncode
-            }
-        except subprocess.TimeoutExpired:
-            return {"runner": "pytest", "pass": False, "output": "pytest 실행 시간 초과 (15초)", "returncode": -1}
-        except Exception as e:
-            return {"runner": "pytest", "pass": False, "output": f"pytest 실행 실패: {e}", "returncode": -1}
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            xml_report = os.path.join(tmp_dir, "junit_report.xml")
+            try:
+                res = subprocess.run(
+                    [sys.executable, "-m", "pytest", "-q", f"--junitxml={xml_report}", test_name],
+                    cwd=test_dir,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=15
+                )
+                out = (res.stdout.strip() + "\n" + res.stderr.strip()).strip()
+                
+                # 1순위: 구조화된 JUnit XML로 기계적 판정 (터미널 텍스트 위장 원천 차단)
+                if os.path.isfile(xml_report):
+                    xml_pass, xml_msg = parse_pytest_xml(xml_report)
+                    if xml_pass is not None:
+                        return {
+                            "runner": "pytest",
+                            "pass": (res.returncode == 0) and xml_pass,
+                            "output": out if xml_pass else f"[JUnit XML 검증 실패]\n{xml_msg}\n{out}",
+                            "returncode": res.returncode
+                        }
+
+                # 2순위 (XML 미생성 시): 터미널 출력 정밀 요약 라인 파싱
+                passed, formatted_output = parse_pytest_output(res.returncode, out)
+                return {
+                    "runner": "pytest",
+                    "pass": passed,
+                    "output": formatted_output,
+                    "returncode": res.returncode
+                }
+            except subprocess.TimeoutExpired:
+                return {"runner": "pytest", "pass": False, "output": "pytest 실행 시간 초과 (15초)", "returncode": -1}
+            except Exception as e:
+                return {"runner": "pytest", "pass": False, "output": f"pytest 실행 실패: {e}", "returncode": -1}
 
     # 2. pytest 미설치 시 파이썬 내장 unittest로 실행
     try:

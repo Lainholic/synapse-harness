@@ -22,6 +22,7 @@ from verify import (
     verify_file,
     parse_pytest_output,
     parse_unittest_output,
+    parse_pytest_xml,
 )
 from model_sanitizer import scan_text, sanitize_text
 
@@ -152,6 +153,39 @@ class TestSynapseHarness(unittest.TestCase):
         raw_output = "1 skipped in 0.05s\n1 UserWarning previous run had 1 passed in 0.05s"
         passed, out = parse_pytest_output(0, raw_output)
         self.assertFalse(passed, "Arbitrary non-pytest keyword line must not be recognized as summary.")
+
+    def test_pytest_parse_contradictory_summary_fails(self):
+        # Contradictory summary with failed count reported alongside passed count
+        raw_output = "1 passed, 1 failed in 0.05s"
+        passed, out = parse_pytest_output(0, raw_output)
+        self.assertFalse(passed, "Contradictory summary with failed count must fail.")
+
+    def test_pytest_xml_parsing(self):
+        # Directly test parse_pytest_xml with structured JUnit XML
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            xml_pass_file = os.path.join(tmp_dir, "pass.xml")
+            with open(xml_pass_file, "w", encoding="utf-8") as f:
+                f.write('<?xml version="1.0" encoding="utf-8"?><testsuite name="pytest" errors="0" failures="0" skipped="0" tests="5"></testsuite>')
+            passed, msg = parse_pytest_xml(xml_pass_file)
+            self.assertTrue(passed, msg)
+
+            xml_fail_file = os.path.join(tmp_dir, "fail.xml")
+            with open(xml_fail_file, "w", encoding="utf-8") as f:
+                f.write('<?xml version="1.0" encoding="utf-8"?><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="5"></testsuite>')
+            passed_f, msg_f = parse_pytest_xml(xml_fail_file)
+            self.assertFalse(passed_f, msg_f)
+
+    def test_unittest_parse_clean_ok_passes(self):
+        # Positive test: clean unittest OK output
+        raw_output = "Ran 1 test in 0.001s\n\nOK"
+        passed, out = parse_unittest_output(0, raw_output)
+        self.assertTrue(passed, f"Clean OK should pass: {out}")
+
+    def test_unittest_parse_expected_failures_passes(self):
+        # Positive test: OK with expected failures should succeed
+        raw_output = "Ran 2 tests in 0.001s\n\nOK (expected failures=1)"
+        passed, out = parse_unittest_output(0, raw_output)
+        self.assertTrue(passed, f"OK with expected failures should pass: {out}")
 
     def test_unittest_parse_all_skipped_fails(self):
         # Directly test parse_unittest_output when all tests are skipped
