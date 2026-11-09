@@ -36,6 +36,42 @@ def find_paired_test(file_path):
             return cand
     return None
 
+def parse_pytest_output(returncode, out):
+    """pytest 터미널 출력의 최종 요약 라인을 파싱하여 정확한 성공 여부를 판정합니다."""
+    lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
+    if not lines:
+        return False, "[테스트 미실행] 출력이 비어 있습니다."
+        
+    # pytest의 최종 요약 라인은 주로 마지막에 위치하며 (= ... in ...s =) 형식을 가짐
+    summary_candidates = [
+        ln for ln in lines 
+        if bool(re.search(r"(=+.*in\s+[\d\.]+s.*=+|\b\d+\s+passed\b|\bno tests ran\b)", ln))
+    ]
+    summary_line = summary_candidates[-1] if summary_candidates else lines[-1]
+    
+    # 요약 라인에서 단어 경계(\b) 기반으로 passed / 0 passed / no tests ran 정밀 판별
+    # 경고문 등 앞부분 텍스트에 우연히 포함된 '1 passed' 오탐 차단
+    has_explicit_pass = bool(re.search(r"\b[1-9]\d* passed\b", summary_line))
+    has_zero_pass = bool(re.search(r"\b0 passed\b", summary_line)) or "no tests ran" in summary_line or "collected 0 items" in summary_line
+    
+    passed = (returncode == 0) and has_explicit_pass and not has_zero_pass
+    return passed, out if passed else f"[테스트 미실행 또는 실패]\n{out}"
+
+def parse_unittest_output(returncode, out):
+    """unittest 터미널 출력을 파싱하여 Ran 0 tests 및 전부 skipped를 차단합니다."""
+    lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
+    if not lines:
+        return False, "[테스트 미실행] 출력이 비어 있습니다."
+
+    has_zero_tests = "Ran 0 tests" in out
+    all_skipped = bool(re.search(r"Ran (\d+) tests? in [0-9\.]+s\s+OK \(skipped=\1\)", out))
+    
+    if has_zero_tests or all_skipped:
+        return False, f"실행된 유효 테스트 케이스가 없거나 전부 건너뛰어졌습니다:\n{out}"
+        
+    passed = (returncode == 0)
+    return passed, out if passed else f"[테스트 실패]\n{out}"
+
 def run_unit_test(test_file):
     """동일한 Python 인터프리터의 pytest 또는 unittest로 테스트 파일을 격리 실행합니다."""
     test_dir = os.path.dirname(os.path.abspath(test_file))
@@ -64,17 +100,11 @@ def run_unit_test(test_file):
                 timeout=15
             )
             out = (res.stdout.strip() + "\n" + res.stderr.strip()).strip()
-            
-            # 정밀 판정: 10 passed 등이 '0 passed' 부분 문자열에 오작동하지 않도록 정규식 단어 경계(\b) 사용
-            # 최소 1개 이상의 실제 통과([1-9]\d* passed)가 있어야 하며, 0 passed 또는 no tests ran 방어
-            has_explicit_pass = bool(re.search(r"\b[1-9]\d* passed\b", out))
-            has_zero_pass = bool(re.search(r"\b0 passed\b", out)) or "no tests ran" in out or "collected 0 items" in out
-            passed = (res.returncode == 0) and has_explicit_pass and not has_zero_pass
-            
+            passed, formatted_output = parse_pytest_output(res.returncode, out)
             return {
                 "runner": "pytest",
                 "pass": passed,
-                "output": out if passed else f"[테스트 미실행 또는 실패]\n{out}",
+                "output": formatted_output,
                 "returncode": res.returncode
             }
         except subprocess.TimeoutExpired:
@@ -93,24 +123,11 @@ def run_unit_test(test_file):
             timeout=15
         )
         out = (res.stdout.strip() + "\n" + res.stderr.strip()).strip()
-        
-        # Ran 0 tests 방어 및 전부 skipped 방어
-        has_zero_tests = "Ran 0 tests" in out
-        # 모든 테스트가 skipped된 경우 (예: Ran 1 test in 0.001s \n OK (skipped=1))
-        all_skipped = bool(re.search(r"Ran (\d+) tests? in [0-9\.]+s\s+OK \(skipped=\1\)", out))
-        
-        if has_zero_tests or all_skipped:
-            return {
-                "runner": "unittest",
-                "pass": False,
-                "output": f"실행된 유효 테스트 케이스가 없거나 전부 건너뛰어졌습니다:\n{out}",
-                "returncode": -1
-            }
-            
+        passed, formatted_output = parse_unittest_output(res.returncode, out)
         return {
             "runner": "unittest",
-            "pass": res.returncode == 0,
-            "output": out,
+            "pass": passed,
+            "output": formatted_output,
             "returncode": res.returncode
         }
     except subprocess.TimeoutExpired:

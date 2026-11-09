@@ -7,7 +7,7 @@ import sys
 import unittest
 import subprocess
 import json
-import re
+import tempfile
 
 # Suppress bytecode generation
 sys.dont_write_bytecode = True
@@ -18,7 +18,11 @@ SCRIPTS_DIR = os.path.join(BASE_DIR, "scripts")
 if SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, SCRIPTS_DIR)
 
-from verify import verify_file
+from verify import (
+    verify_file,
+    parse_pytest_output,
+    parse_unittest_output,
+)
 from model_sanitizer import scan_text, sanitize_text
 
 class TestSynapseHarness(unittest.TestCase):
@@ -66,31 +70,25 @@ class TestSynapseHarness(unittest.TestCase):
         self.assertFalse(res["success"], "Requesting --smoke on non-py file must fail.")
         self.assertEqual(res["report"]["smoke_status"], "unsupported")
 
-    def test_verify_non_py_json_with_test_flag_fails(self):
-        # Test on temporary JSON file
-        json_path = os.path.join(BASE_DIR, "tests", "temp_test.json")
-        try:
+    def test_verify_non_py_json_with_test_flag_fails_isolated(self):
+        # Safely create JSON in an isolated temporary directory (no workspace pollution)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            json_path = os.path.join(tmp_dir, "isolated_test.json")
             with open(json_path, "w", encoding="utf-8") as f:
                 f.write('{"test": true}')
             res = verify_file(json_path, run_tests=True)
             self.assertFalse(res["success"], "Requesting --test on JSON must fail.")
             self.assertEqual(res["report"]["test_status"], "unsupported")
-        finally:
-            if os.path.exists(json_path):
-                os.remove(json_path)
 
-    def test_verify_non_py_json_with_smoke_flag_fails(self):
-        # Test on temporary JSON file
-        json_path = os.path.join(BASE_DIR, "tests", "temp_test_smoke.json")
-        try:
+    def test_verify_non_py_json_with_smoke_flag_fails_isolated(self):
+        # Safely create JSON in an isolated temporary directory (no workspace pollution)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            json_path = os.path.join(tmp_dir, "isolated_test_smoke.json")
             with open(json_path, "w", encoding="utf-8") as f:
                 f.write('{"test": true}')
             res = verify_file(json_path, smoke=True)
             self.assertFalse(res["success"], "Requesting --smoke on JSON must fail.")
             self.assertEqual(res["report"]["smoke_status"], "unsupported")
-        finally:
-            if os.path.exists(json_path):
-                os.remove(json_path)
 
     def test_verify_non_py_both_flags_fail(self):
         target_path = os.path.join(BASE_DIR, "SECURITY.md")
@@ -102,7 +100,6 @@ class TestSynapseHarness(unittest.TestCase):
     def test_verify_strict_mode(self):
         sample_path = os.path.join(BASE_DIR, "tests", "sample_valid.py")
         res = verify_file(sample_path, strict=True)
-        # Should execute encoding and syntax pass regardless of external linter presence
         self.assertTrue(res["report"]["syntax_pass"])
         self.assertTrue(res["report"]["encoding_pass"])
 
@@ -126,13 +123,28 @@ class TestSynapseHarness(unittest.TestCase):
         self.assertFalse(data["success"])
         self.assertEqual(data["report"]["test_status"], "unsupported")
 
-    def test_pytest_ten_passed_pattern_regression(self):
-        # Regress against '0 passed' false-matching '10 passed' or '20 passed'
-        sample_output = "10 passed in 0.25s"
-        has_explicit_pass = bool(re.search(r"\b[1-9]\d* passed\b", sample_output))
-        has_zero_pass = bool(re.search(r"\b0 passed\b", sample_output))
-        self.assertTrue(has_explicit_pass, "Should correctly detect 10 passed")
-        self.assertFalse(has_zero_pass, "10 passed should not match 0 passed boundary")
+    def test_pytest_parse_ten_passed(self):
+        # Directly test parse_pytest_output with 10 passed
+        raw_output = "rootdir: /test\ncollected 10 items\n\n10 passed in 0.15s"
+        passed, out = parse_pytest_output(0, raw_output)
+        self.assertTrue(passed, f"10 passed must succeed: {out}")
+
+    def test_pytest_parse_warning_with_passed_text_fails_when_zero_pass(self):
+        # Warning contains '1 passed' text but summary is 0 passed
+        raw_output = "UserWarning: previous run had 1 passed\ncollected 1 item\n\n= 0 passed, 1 skipped in 0.05s ="
+        passed, out = parse_pytest_output(0, raw_output)
+        self.assertFalse(passed, "0 passed summary with warning text must fail.")
+
+    def test_unittest_parse_all_skipped_fails(self):
+        # Directly test parse_unittest_output when all tests are skipped
+        raw_output = "test_foo (tests.test_bar) ... skipped 'reason'\n\nRan 2 tests in 0.001s\n\nOK (skipped=2)"
+        passed, out = parse_unittest_output(0, raw_output)
+        self.assertFalse(passed, f"All skipped tests must fail: {out}")
+
+    def test_unittest_parse_zero_tests_fails(self):
+        raw_output = "\nRan 0 tests in 0.000s\n\nOK"
+        passed, out = parse_unittest_output(0, raw_output)
+        self.assertFalse(passed, "Ran 0 tests must fail.")
 
     def test_sanitizer_scan(self):
         sample_text = f"{'Gemini'} {'1.5'} {'Pro'} and {'Claude'} {'3.5'} {'Sonnet'}."

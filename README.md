@@ -38,7 +38,7 @@ A successful check does not guarantee that code is completely defect-free. Exter
 │  - Devil's Advocate reviewer persona         │
 │  - Evaluates race conditions, leaks, edge    │
 │    cases, and resource boundaries            │
-│  - Executed only on explicit user request    │
+│  - Single-pass only upon explicit request    │
 └──────────────────────┬───────────────────────┘
                        │ Findings
                        ▼
@@ -101,7 +101,7 @@ python scripts/verify.py "/path/to/target_file.py" --test
 ```
 
 > **Security Notice on Execution Boundaries:**  
-> By default, the verifier does not smoke-import the target or run its tests. External analyzers, their configuration and plugins, and the execution environment remain separate trust boundaries. Both `--test` and `--smoke` execute code with the current user's privileges; subprocesses and timeouts are helpful isolation barriers, but they are not security sandboxes. Use appropriate container or VM isolation when analyzing untrusted third-party code.
+> By default, the verifier does not smoke-import the target or run its tests. External analyzers, their configuration and plugins, and the execution environment remain separate trust boundaries. Both `--test` and `--smoke` execute code with the current user's privileges; subprocesses and timeouts are helpful isolation barriers, but they are not security sandboxes. The harness suppresses its own bytecode and uses isolated temporary directories for compilation; external tools and test runners manage their own caches per their respective configurations. Use appropriate container or VM isolation when analyzing untrusted third-party code.
 
 Output is emitted in structured JSON:
 ```json

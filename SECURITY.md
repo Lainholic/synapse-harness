@@ -19,7 +19,8 @@ Private vulnerability reports are reviewed directly by the maintainers through G
 - **Static Analysis Mode (Default)**: Executes `py_compile` and, when available, local linters (`ruff`, `mypy`) under the current user's operating system privileges. The harness itself contains no telemetry and transmits no data over the network.
 - **Dynamic Options (`--smoke`, `--test`)**: Invoking `--smoke` (importing the target module) or `--test` (running paired test suites) executes target code directly with your user privileges. Both options are restricted to Python (`.py`) files.
 - **Isolation Warning**: Timeouts and subprocesses provide fault isolation, but they are not cryptographic or operating system security sandboxes. When analyzing untrusted third-party code, execute the harness within a container or isolated virtual machine with network restrictions.
+- **Cache Boundaries**: The harness suppresses its own bytecode generation and routes compilation artifacts to isolated temporary directories. External analyzers (e.g. Ruff, Mypy) and test runners (e.g. pytest) manage their own internal caches according to their local configurations.
 
 ## External AI Review Boundary (Stage 2)
 
-When invoking optional Stage 2 adversarial reviews, code snippets and verification summaries are passed to the AI models or subagents explicitly selected by the user. Ensure compliance with your organization's data classification and AI policies before sending code to third-party model endpoints.
+Stage 2 adversarial reviews are strictly single-pass only, executed solely upon explicit user request. When invoked, code snippets and verification summaries are passed to the AI models or subagents explicitly selected by the user. Ensure compliance with your organization's data classification and AI policies before sending code to third-party model endpoints.
