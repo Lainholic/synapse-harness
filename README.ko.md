@@ -100,7 +100,7 @@ python scripts/verify.py "/path/to/target_file.py" --test
 > **실행 경계 및 보안 주의사항:**  
 > 기본 모드는 대상 파일의 스모크 임포트와 단위 테스트를 실행하지 않습니다. 다만 외부 분석기, 프로젝트 설정, 플러그인 및 실행 환경은 별도의 신뢰 경계입니다. 하네스 자체는 바이트코드 생성을 억제하고 임시 디렉터리에서 컴파일하지만, 외부 분석기 및 테스트 러너의 자체 캐시는 각 도구 설정에 따릅니다. `--test` 및 `--smoke`는 현재 사용자 권한으로 코드를 직접 실행하므로, 신뢰할 수 없는 외부 코드는 컨테이너나 격리된 VM 환경에서 분석하십시오.
 
-출력 결과는 구조화된 JSON 형태로 제공됩니다:
+출력 결과는 구조화된 JSON 형태로 제공됩니다 (발췌 예시):
 ```json
 {
   "success": true,
@@ -110,9 +110,14 @@ python scripts/verify.py "/path/to/target_file.py" --test
     "encoding_pass": true,
     "syntax_pass": true,
     "linter_status": "pass",
+    "type_check_status": "pass",
+    "smoke_status": "skipped",
+    "test_status": "skipped",
+    "model_scan_status": "pass",
     "details": [
-      "py_compile 구문 검사 PASS (오염 없는 격리 컴파일)",
-      "ruff 정적 린터 PASS (코드 무결)"
+      "py_compile 구문 검사 PASS (격리 컴파일 완료)",
+      "ruff 정적 린터 PASS",
+      "구형 모델명 기계 검사 PASS (0개 확인)"
     ]
   }
 }

@@ -103,7 +103,7 @@ python scripts/verify.py "/path/to/target_file.py" --test
 > **Security Notice on Execution Boundaries:**  
 > By default, the verifier does not smoke-import the target or run its tests. External analyzers, their configuration and plugins, and the execution environment remain separate trust boundaries. Both `--test` and `--smoke` execute code with the current user's privileges; subprocesses and timeouts are helpful isolation barriers, but they are not security sandboxes. The harness suppresses its own bytecode and uses isolated temporary directories for compilation; external tools and test runners manage their own caches per their respective configurations. Use appropriate container or VM isolation when analyzing untrusted third-party code.
 
-Output is emitted in structured JSON:
+Output is emitted in structured JSON (example snippet):
 ```json
 {
   "success": true,
@@ -113,9 +113,14 @@ Output is emitted in structured JSON:
     "encoding_pass": true,
     "syntax_pass": true,
     "linter_status": "pass",
+    "type_check_status": "pass",
+    "smoke_status": "skipped",
+    "test_status": "skipped",
+    "model_scan_status": "pass",
     "details": [
       "py_compile 구문 검사 PASS (격리 컴파일 완료)",
-      "ruff 정적 린터 PASS (코드 무결)"
+      "ruff 정적 린터 PASS",
+      "구형 모델명 기계 검사 PASS (0개 확인)"
     ]
   }
 }

@@ -334,14 +334,15 @@ def run_unit_test(test_file, target_file=None):
 
 def run_smoke_import(file_path):
     """모듈을 서브프로세스에서 임포트하여 즉각적인 초기화 런타임 크래시를 검증합니다.
-    대상 모듈이 속한 디렉터리를 sys.path에 안전하게 주입하여 형제 모듈 임포트를 보장합니다.
+    대상 모듈 디렉터리를 sys.path 맨 앞(sys.path[0])에 확실히 승격시켜 형제 모듈 임포트를 최우선 보장합니다.
     """
     code = (
         "import sys, os, importlib.util\n"
         "sys.dont_write_bytecode = True\n"
         "target = sys.argv[1]\n"
         "target_dir = os.path.dirname(os.path.abspath(target))\n"
-        "if target_dir not in sys.path: sys.path.insert(0, target_dir)\n"
+        "while target_dir in sys.path: sys.path.remove(target_dir)\n"
+        "sys.path.insert(0, target_dir)\n"
         "spec = importlib.util.spec_from_file_location('__harness_smoke__', target)\n"
         "mod = importlib.util.module_from_spec(spec)\n"
         "spec.loader.exec_module(mod)\n"
@@ -406,7 +407,7 @@ def verify_file(file_path, run_tests=False, smoke=False, strict=False):
 
     # 1. 파이썬 문법, 린터, 타입, 옵션별 런타임 검사
     if ext == ".py":
-        # 인코딩 검사
+        # 인코딩 및 파일 읽기 무결성 검사
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 f.read()
@@ -415,6 +416,11 @@ def verify_file(file_path, run_tests=False, smoke=False, strict=False):
             report["encoding_pass"] = False
             report["syntax_pass"] = False
             report["details"].append(f"UTF-8 디코딩 오류: {str(e)}")
+            return {"success": False, "report": report}
+        except OSError as e:
+            report["encoding_pass"] = False
+            report["syntax_pass"] = False
+            report["details"].append(f"파일 읽기 접근 오류(OSError): {str(e)}")
             return {"success": False, "report": report}
 
         # 자체 바이트코드 잔여 방지를 위해 임시 디렉터리에서 컴파일 수행
@@ -427,6 +433,10 @@ def verify_file(file_path, run_tests=False, smoke=False, strict=False):
             except py_compile.PyCompileError as e:
                 report["syntax_pass"] = False
                 report["details"].append(f"구문 오류(SyntaxError): {str(e)}")
+                return {"success": False, "report": report}
+            except Exception as e:
+                report["syntax_pass"] = False
+                report["details"].append(f"컴파일 환경 예외 발생: {str(e)}")
                 return {"success": False, "report": report}
 
         # ruff 린터 정적 분석 (--no-fix 명시하여 검수 시 원본 불변 보장)

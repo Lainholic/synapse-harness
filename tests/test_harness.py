@@ -123,6 +123,7 @@ class TestSynapseHarness(unittest.TestCase):
         res1 = verify_file(sample_path, strict=True)
         self.assertFalse(res1["success"], "Strict mode must fail when only ruff is missing.")
         self.assertEqual(res1["report"]["linter_status"], "not_installed")
+        self.assertEqual(res1["report"]["type_check_status"], "pass")
 
         # 2. Simulate mypy missing only
         def side_effect_mypy_missing(cmd, *args, **kwargs):
@@ -134,6 +135,7 @@ class TestSynapseHarness(unittest.TestCase):
         res2 = verify_file(sample_path, strict=True)
         self.assertFalse(res2["success"], "Strict mode must fail when only mypy is missing.")
         self.assertEqual(res2["report"]["type_check_status"], "not_installed")
+        self.assertEqual(res2["report"]["linter_status"], "pass")
 
     def test_cli_execution_exit_codes(self):
         script_path = os.path.join(SCRIPTS_DIR, "verify.py")
@@ -207,25 +209,32 @@ class TestSynapseHarness(unittest.TestCase):
             self.assertFalse(passed_f, msg_f)
 
     def test_pytest_xml_orphan_testcase_fails(self):
-        # Counterexample: orphan testcase tag outside of any testsuite
+        # Counterexample: valid testcase inside suite s1, but an orphan testcase tag exists outside of any suite
         with tempfile.TemporaryDirectory() as tmp_dir:
             xml_file = os.path.join(tmp_dir, "orphan.xml")
             with open(xml_file, "w", encoding="utf-8") as f:
                 f.write('<?xml version="1.0" encoding="utf-8"?><testsuites>'
-                        '<testsuite name="s1" errors="0" failures="0" skipped="0" tests="0"></testsuite>'
+                        '<testsuite name="s1" errors="0" failures="0" skipped="0" tests="1">'
+                        '<testcase name="valid"/>'
+                        '</testsuite>'
                         '<testcase name="orphan"/>'
                         '</testsuites>')
             passed, msg = parse_pytest_xml(xml_file)
             self.assertFalse(passed, "Orphan testcase outside testsuite must fail.")
+            self.assertIn("고아", msg)
 
     def test_pytest_xml_empty_suite_counter_mismatch_fails(self):
-        # Counterexample: suite has 0 testcases but tests="1"
+        # Counterexample: s1 has 1 testcase (tests=1), but s2 claims tests=1 with 0 testcases
         with tempfile.TemporaryDirectory() as tmp_dir:
             xml_file = os.path.join(tmp_dir, "empty_mismatch.xml")
             with open(xml_file, "w", encoding="utf-8") as f:
-                f.write('<?xml version="1.0" encoding="utf-8"?><testsuite name="s1" errors="0" failures="0" skipped="0" tests="1"></testsuite>')
+                f.write('<?xml version="1.0" encoding="utf-8"?><testsuites>'
+                        '<testsuite name="s1" errors="0" failures="0" skipped="0" tests="1"><testcase name="t1"/></testsuite>'
+                        '<testsuite name="s2" errors="0" failures="0" skipped="0" tests="1"></testsuite>'
+                        '</testsuites>')
             passed, msg = parse_pytest_xml(xml_file)
-            self.assertFalse(passed, "Empty suite with tests=1 must fail.")
+            self.assertFalse(passed, "Multi-suite where second suite is empty but claims tests=1 must fail.")
+            self.assertIn("불일치", msg)
 
     def test_pytest_xml_tests_count_mismatch_fails(self):
         # Counterexample: tests attribute claims 5 tests, but only 1 testcase tag exists
@@ -460,7 +469,6 @@ class TestSynapseHarness(unittest.TestCase):
         # Path collision test: target_dir/calc.py vs cwd/calc.py
         # target_dir must take precedence over cwd so the genuine target is tested
         with tempfile.TemporaryDirectory() as tmp_dir:
-            # Genuine target
             target_calc = os.path.join(tmp_dir, "calc.py")
             with open(target_calc, "w", encoding="utf-8") as f:
                 f.write("def compute(): return 'genuine'\n")
@@ -468,7 +476,6 @@ class TestSynapseHarness(unittest.TestCase):
             sub_tests = os.path.join(tmp_dir, "tests")
             os.makedirs(sub_tests, exist_ok=True)
 
-            # Shadowing collision file in tests directory
             shadow_calc = os.path.join(sub_tests, "calc.py")
             with open(shadow_calc, "w", encoding="utf-8") as f:
                 f.write("def compute(): return 'shadowed'\n")
@@ -477,8 +484,15 @@ class TestSynapseHarness(unittest.TestCase):
             with open(test_calc, "w", encoding="utf-8") as f:
                 f.write("import unittest\nfrom calc import compute\nclass TestPriority(unittest.TestCase):\n    def test_val(self):\n        self.assertEqual(compute(), 'genuine')\n")
 
+            # 1. Run under default available runner (pytest if installed)
             res = run_unit_test(test_calc, target_file=target_calc)
             self.assertTrue(res["pass"], f"Target dir must take precedence over cwd: {res}")
+
+            # 2. Run specifically under unittest runner (by mocking find_spec to return None for pytest)
+            with patch("importlib.util.find_spec", return_value=None):
+                res_unittest = run_unit_test(test_calc, target_file=target_calc)
+                self.assertEqual(res_unittest["runner"], "unittest")
+                self.assertTrue(res_unittest["pass"], f"Unittest runner must also prioritize target_dir: {res_unittest}")
 
     def test_smoke_import_with_sibling_module(self):
         # Sibling import test: main.py imports helper.py in the same directory
