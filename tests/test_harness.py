@@ -7,6 +7,7 @@ import sys
 import unittest
 import subprocess
 import json
+import re
 
 # Suppress bytecode generation
 sys.dont_write_bytecode = True
@@ -54,36 +55,58 @@ class TestSynapseHarness(unittest.TestCase):
         self.assertEqual(res["report"]["test_status"], "pass")
 
     def test_verify_non_py_markdown_with_test_flag_fails(self):
-        # Requesting --test on markdown file must fail explicitly
         target_path = os.path.join(BASE_DIR, "README.md")
         res = verify_file(target_path, run_tests=True)
         self.assertFalse(res["success"], "Requesting --test on non-py file must fail.")
         self.assertEqual(res["report"]["test_status"], "unsupported")
 
     def test_verify_non_py_with_smoke_flag_fails(self):
-        # Requesting --smoke on non-py file must fail explicitly
         target_path = os.path.join(BASE_DIR, "LICENSE")
         res = verify_file(target_path, smoke=True)
         self.assertFalse(res["success"], "Requesting --smoke on non-py file must fail.")
         self.assertEqual(res["report"]["smoke_status"], "unsupported")
 
+    def test_verify_non_py_json_with_test_flag_fails(self):
+        # Test on temporary JSON file
+        json_path = os.path.join(BASE_DIR, "tests", "temp_test.json")
+        try:
+            with open(json_path, "w", encoding="utf-8") as f:
+                f.write('{"test": true}')
+            res = verify_file(json_path, run_tests=True)
+            self.assertFalse(res["success"], "Requesting --test on JSON must fail.")
+            self.assertEqual(res["report"]["test_status"], "unsupported")
+        finally:
+            if os.path.exists(json_path):
+                os.remove(json_path)
+
+    def test_verify_non_py_json_with_smoke_flag_fails(self):
+        # Test on temporary JSON file
+        json_path = os.path.join(BASE_DIR, "tests", "temp_test_smoke.json")
+        try:
+            with open(json_path, "w", encoding="utf-8") as f:
+                f.write('{"test": true}')
+            res = verify_file(json_path, smoke=True)
+            self.assertFalse(res["success"], "Requesting --smoke on JSON must fail.")
+            self.assertEqual(res["report"]["smoke_status"], "unsupported")
+        finally:
+            if os.path.exists(json_path):
+                os.remove(json_path)
+
     def test_verify_non_py_both_flags_fail(self):
-        # Requesting both --test and --smoke on non-py file must fail both
         target_path = os.path.join(BASE_DIR, "SECURITY.md")
         res = verify_file(target_path, run_tests=True, smoke=True)
         self.assertFalse(res["success"])
         self.assertEqual(res["report"]["test_status"], "unsupported")
         self.assertEqual(res["report"]["smoke_status"], "unsupported")
 
-    def test_verify_strict_mode_valid(self):
-        # In strict mode, a valid python file without legacy strings should pass
+    def test_verify_strict_mode(self):
         sample_path = os.path.join(BASE_DIR, "tests", "sample_valid.py")
         res = verify_file(sample_path, strict=True)
-        # Note: if ruff/mypy are installed locally, success is True
-        self.assertIn("success", res)
+        # Should execute encoding and syntax pass regardless of external linter presence
+        self.assertTrue(res["report"]["syntax_pass"])
+        self.assertTrue(res["report"]["encoding_pass"])
 
-    def test_cli_execution_exit_code(self):
-        # Verify that scripts/verify.py CLI returns exit code 0 for valid and 1 for invalid
+    def test_cli_execution_exit_codes(self):
         script_path = os.path.join(SCRIPTS_DIR, "verify.py")
         valid_path = os.path.join(BASE_DIR, "tests", "sample_valid.py")
         invalid_path = os.path.join(BASE_DIR, "tests", "sample_syntax_error.py")
@@ -94,8 +117,24 @@ class TestSynapseHarness(unittest.TestCase):
         proc_err = subprocess.run([sys.executable, script_path, invalid_path], capture_output=True, text=True)
         self.assertEqual(proc_err.returncode, 1)
 
+    def test_cli_non_py_test_flag_rejection(self):
+        script_path = os.path.join(SCRIPTS_DIR, "verify.py")
+        readme_path = os.path.join(BASE_DIR, "README.md")
+        proc = subprocess.run([sys.executable, script_path, readme_path, "--test"], capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 1)
+        data = json.loads(proc.stdout)
+        self.assertFalse(data["success"])
+        self.assertEqual(data["report"]["test_status"], "unsupported")
+
+    def test_pytest_ten_passed_pattern_regression(self):
+        # Regress against '0 passed' false-matching '10 passed' or '20 passed'
+        sample_output = "10 passed in 0.25s"
+        has_explicit_pass = bool(re.search(r"\b[1-9]\d* passed\b", sample_output))
+        has_zero_pass = bool(re.search(r"\b0 passed\b", sample_output))
+        self.assertTrue(has_explicit_pass, "Should correctly detect 10 passed")
+        self.assertFalse(has_zero_pass, "10 passed should not match 0 passed boundary")
+
     def test_sanitizer_scan(self):
-        # Dynamically build legacy string to avoid self-triggering static linter on test files
         sample_text = f"{'Gemini'} {'1.5'} {'Pro'} and {'Claude'} {'3.5'} {'Sonnet'}."
         findings = scan_text(sample_text)
         self.assertGreater(len(findings), 0, "Should detect legacy model names.")

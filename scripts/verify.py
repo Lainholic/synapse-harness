@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import re
 import tempfile
 import py_compile
 import subprocess
@@ -64,9 +65,12 @@ def run_unit_test(test_file):
             )
             out = (res.stdout.strip() + "\n" + res.stderr.strip()).strip()
             
-            # 테스트가 0개 수집되었거나 실행되지 않은 경우 성공 오인 방지
-            is_empty = "no tests ran" in out or "collected 0 items" in out or "0 passed" in out
-            passed = (res.returncode == 0) and not is_empty
+            # 정밀 판정: 10 passed 등이 '0 passed' 부분 문자열에 오작동하지 않도록 정규식 단어 경계(\b) 사용
+            # 최소 1개 이상의 실제 통과([1-9]\d* passed)가 있어야 하며, 0 passed 또는 no tests ran 방어
+            has_explicit_pass = bool(re.search(r"\b[1-9]\d* passed\b", out))
+            has_zero_pass = bool(re.search(r"\b0 passed\b", out)) or "no tests ran" in out or "collected 0 items" in out
+            passed = (res.returncode == 0) and has_explicit_pass and not has_zero_pass
+            
             return {
                 "runner": "pytest",
                 "pass": passed,
@@ -89,14 +93,20 @@ def run_unit_test(test_file):
             timeout=15
         )
         out = (res.stdout.strip() + "\n" + res.stderr.strip()).strip()
-        # Ran 0 tests 방어: 실제 테스트가 0개 실행된 경우 성공으로 오인하지 않음
-        if "Ran 0 tests" in out:
+        
+        # Ran 0 tests 방어 및 전부 skipped 방어
+        has_zero_tests = "Ran 0 tests" in out
+        # 모든 테스트가 skipped된 경우 (예: Ran 1 test in 0.001s \n OK (skipped=1))
+        all_skipped = bool(re.search(r"Ran (\d+) tests? in [0-9\.]+s\s+OK \(skipped=\1\)", out))
+        
+        if has_zero_tests or all_skipped:
             return {
                 "runner": "unittest",
                 "pass": False,
-                "output": f"실행된 테스트 케이스가 0개입니다:\n{out}",
+                "output": f"실행된 유효 테스트 케이스가 없거나 전부 건너뛰어졌습니다:\n{out}",
                 "returncode": -1
             }
+            
         return {
             "runner": "unittest",
             "pass": res.returncode == 0,
@@ -110,7 +120,6 @@ def run_unit_test(test_file):
 
 def run_smoke_import(file_path):
     """모듈을 서브프로세스에서 임포트하여 즉각적인 초기화 런타임 크래시를 검증합니다."""
-    # 경로를 문자열에 직접 삽입하지 않고 sys.argv[1]로 안전하게 전달
     code = (
         "import sys, importlib.util;"
         "sys.dont_write_bytecode = True;"
