@@ -605,6 +605,31 @@ class TestSynapseHarness(unittest.TestCase):
                     self.assertEqual(res2["runner"], "pytest")
                     self.assertIn("[JUnit XML 누락 FAIL]", res2["output"])
 
+                # 4. stat stage PermissionError -> must classify as isolation failure
+                with patch("os.stat", side_effect=PermissionError("stat denied")):
+                    res3 = run_unit_test(sample_test)
+                    self.assertFalse(res3["pass"])
+                    self.assertEqual(res3["runner"], "pytest")
+                    self.assertIn("pytest 임시 디렉터리 격리 실패", res3["output"])
+
+                # 5. stat stage FileNotFoundError -> must classify as XML missing
+                with patch("os.stat", side_effect=FileNotFoundError("no xml")):
+                    res4 = run_unit_test(sample_test)
+                    self.assertFalse(res4["pass"])
+                    self.assertEqual(res4["runner"], "pytest")
+                    self.assertIn("[JUnit XML 누락 FAIL]", res4["output"])
+
+    def test_unit_test_subprocess_spawn_filenotfound_handled(self):
+        # subprocess.run spawn failure (FileNotFoundError) must be cleanly reported without UnboundLocalError
+        with patch("importlib.util.find_spec", return_value=True):
+            with patch("subprocess.run", side_effect=FileNotFoundError("missing executable or cwd")):
+                sample_test = os.path.join(BASE_DIR, "tests", "sample_calc_test.py")
+                res = run_unit_test(sample_test)
+                self.assertFalse(res["pass"])
+                self.assertEqual(res["runner"], "pytest")
+                self.assertEqual(res["returncode"], -1)
+                self.assertIn("pytest 프로세스 시작 실패", res["output"])
+
     def test_smoke_import_self_module_in_sys_modules(self):
         # Module accessing sys.modules[__name__] must succeed in smoke import without KeyError
         with tempfile.TemporaryDirectory() as tmp_dir:

@@ -258,8 +258,9 @@ def run_unit_test(test_file, target_file=None):
         try:
             with tempfile.TemporaryDirectory() as tmp_dir:
                 xml_report = os.path.join(tmp_dir, "junit_report.xml")
+                
+                # 1) pytest 프로세스 실행 구간 (프로세스 시작 실패, 타임아웃 격리)
                 try:
-                    # 러너 스크립트: sys.path에서 작업 디렉터리를 사전 제거하여 정품 pytest를 우선 로드한 뒤 대상 모듈 경로를 주입
                     runner_code = (
                         "import sys, os\n"
                         "cwd = os.getcwd()\n"
@@ -280,8 +281,15 @@ def run_unit_test(test_file, target_file=None):
                         timeout=15
                     )
                     out = (res.stdout.strip() + "\n" + res.stderr.strip()).strip()
-                    
-                    # JUnit XML 파일 상태 확인 (stat 검사)
+                except subprocess.TimeoutExpired:
+                    return {"runner": "pytest", "pass": False, "output": "pytest 실행 시간 초과 (15초)", "returncode": -1}
+                except FileNotFoundError as e:
+                    return {"runner": "pytest", "pass": False, "output": f"pytest 프로세스 시작 실패 (실행 경로 누락): {e}", "returncode": -1}
+                except Exception as e:
+                    return {"runner": "pytest", "pass": False, "output": f"pytest 실행 실패: {e}", "returncode": -1}
+
+                # 2) JUnit XML 파일 상태 검사 및 파싱 구간 (XML 누락과 권한 오류 정밀 분기)
+                try:
                     st = os.stat(xml_report)
                     if st.st_size == 0:
                         return {
@@ -298,10 +306,8 @@ def run_unit_test(test_file, target_file=None):
                         "output": out if (xml_pass and res.returncode == 0) else f"[JUnit XML 검증 실패]\n{xml_msg}\n{out}",
                         "returncode": res.returncode
                     }
-                except subprocess.TimeoutExpired:
-                    return {"runner": "pytest", "pass": False, "output": "pytest 실행 시간 초과 (15초)", "returncode": -1}
                 except FileNotFoundError:
-                    # stat 또는 파싱 시점의 파일 부재는 일관되게 XML 누락으로 분류
+                    # XML 파일 부재 또는 stat 후 파싱 시점 소실(TOCTOU)은 일관되게 XML 누락으로 분류
                     return {
                         "runner": "pytest",
                         "pass": False,
@@ -311,14 +317,7 @@ def run_unit_test(test_file, target_file=None):
                 except OSError as e:
                     return {"runner": "pytest", "pass": False, "output": f"pytest 임시 디렉터리 격리 실패(OSError): {e}", "returncode": -1}
                 except Exception as e:
-                    return {"runner": "pytest", "pass": False, "output": f"pytest 실행 실패: {e}", "returncode": -1}
-        except FileNotFoundError as e:
-            return {
-                "runner": "pytest",
-                "pass": False,
-                "output": f"[JUnit XML 누락 FAIL] pytest 보고서 XML이 존재하지 않습니다: {e}",
-                "returncode": -1
-            }
+                    return {"runner": "pytest", "pass": False, "output": f"pytest XML 검증 예외 발생: {e}", "returncode": -1}
         except OSError as e:
             return {"runner": "pytest", "pass": False, "output": f"pytest 임시 디렉터리 격리 실패(OSError): {e}", "returncode": -1}
         except Exception as e:
