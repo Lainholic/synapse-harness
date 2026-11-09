@@ -124,8 +124,8 @@ class TestSynapseHarness(unittest.TestCase):
         self.assertEqual(data["report"]["test_status"], "unsupported")
 
     def test_pytest_parse_ten_passed(self):
-        # Directly test parse_pytest_output with 10 passed
-        raw_output = "rootdir: /test\ncollected 10 items\n\n10 passed in 0.15s"
+        # Directly test parse_pytest_output with 10 passed in summary line
+        raw_output = "rootdir: /test\ncollected 10 items\n\n= 10 passed in 0.15s ="
         passed, out = parse_pytest_output(0, raw_output)
         self.assertTrue(passed, f"10 passed must succeed: {out}")
 
@@ -140,6 +140,12 @@ class TestSynapseHarness(unittest.TestCase):
         raw_output = "UserWarning: previous run had 1 passed\n1 skipped in 0.05s"
         passed, out = parse_pytest_output(0, raw_output)
         self.assertFalse(passed, "Skipped only with warning text must fail.")
+
+    def test_pytest_parse_trailing_warning_after_skipped_fails(self):
+        # Counterexample: 1 skipped summary followed by trailing warning on the last line
+        raw_output = "1 skipped in 0.05s\nUserWarning: previous run had 1 passed"
+        passed, out = parse_pytest_output(0, raw_output)
+        self.assertFalse(passed, "Trailing warning after skipped summary must not cause false PASS.")
 
     def test_unittest_parse_all_skipped_fails(self):
         # Directly test parse_unittest_output when all tests are skipped
@@ -157,6 +163,12 @@ class TestSynapseHarness(unittest.TestCase):
         raw_output = "module initialization message"
         passed, out = parse_unittest_output(0, raw_output)
         self.assertFalse(passed, "Missing summary must fail.")
+
+    def test_unittest_parse_mixed_progress_all_skipped_fails(self):
+        # Counterexample: progress message contains 'Ran 2 tests' but final block is all skipped
+        raw_output = "progress: Ran 2 tests in 0.01s\ns\n-----\nRan 1 test in 0.001s\n\nOK (skipped=1)"
+        passed, out = parse_unittest_output(0, raw_output)
+        self.assertFalse(passed, "Final block with all skipped must fail even if earlier line had higher test count.")
 
     def test_sanitizer_scan(self):
         sample_text = f"{'Gemini'} {'1.5'} {'Pro'} and {'Claude'} {'3.5'} {'Sonnet'}."
