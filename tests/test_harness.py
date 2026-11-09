@@ -564,20 +564,60 @@ class TestSynapseHarness(unittest.TestCase):
                 res = run_unit_test(sample_test)
                 self.assertFalse(res["pass"])
                 self.assertEqual(res["runner"], "pytest")
-                self.assertIn("임시 디렉터리 격리 실패", res["output"])
+                self.assertEqual(res["returncode"], -1)
+                self.assertIn("pytest 임시 디렉터리 격리 실패(생성/정리 OSError)", res["output"])
+
+    def test_unit_test_pytest_tempdir_cleanup_oserror_handled(self):
+        # TemporaryDirectory __exit__ cleanup failure (OSError) must also be cleanly caught
+        class FailingCleanupTempDir:
+            def __enter__(self):
+                self.name = tempfile.mkdtemp()
+                return self.name
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                import shutil
+                shutil.rmtree(self.name, ignore_errors=True)
+                raise OSError("Cleanup failed (file locked)")
+
+        with patch("importlib.util.find_spec", return_value=True):
+            with patch("tempfile.TemporaryDirectory", side_effect=FailingCleanupTempDir):
+                sample_test = os.path.join(BASE_DIR, "tests", "sample_calc_test.py")
+                res = run_unit_test(sample_test)
+                self.assertFalse(res["pass"])
+                self.assertEqual(res["runner"], "pytest")
+                self.assertEqual(res["returncode"], -1)
+                self.assertIn("pytest 임시 디렉터리 격리 실패(생성/정리 OSError)", res["output"])
+
+    def test_parse_pytest_xml_invalid_root_and_missing_tests(self):
+        # 1. Invalid root tag (e.g. <unexpected>) must be rejected
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            bad_root_xml = os.path.join(tmp_dir, "bad_root.xml")
+            with open(bad_root_xml, "w", encoding="utf-8") as f:
+                f.write('<unexpected><testsuite tests="1"><testcase name="t1"/></testsuite></unexpected>')
+            ok, msg = parse_pytest_xml(bad_root_xml)
+            self.assertFalse(ok)
+            self.assertIn("JUnit XML 루트 태그가 유효하지 않습니다", msg)
+
+        # 2. Missing 'tests' attribute in suite must be rejected
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            no_tests_xml = os.path.join(tmp_dir, "no_tests.xml")
+            with open(no_tests_xml, "w", encoding="utf-8") as f:
+                f.write('<testsuite name="calc"><testcase name="t1"/></testsuite>')
+            ok, msg = parse_pytest_xml(no_tests_xml)
+            self.assertFalse(ok)
+            self.assertIn("필수 속성 'tests'가 누락되었습니다", msg)
 
     def test_pytest_xml_oserror_propagates_to_runner(self):
         # 1. Direct parse_pytest_xml check: PermissionError during XML parsing must raise OSError
         with tempfile.TemporaryDirectory() as tmp_dir:
             dummy_xml = os.path.join(tmp_dir, "locked.xml")
             with open(dummy_xml, "w", encoding="utf-8") as f:
-                f.write("<testsuite/>")
+                f.write('<testsuite tests="0"/>')
 
             with patch("xml.etree.ElementTree.parse", side_effect=PermissionError("Locked file")):
                 with self.assertRaises(OSError):
                     parse_pytest_xml(dummy_xml)
 
-        # 2. Integration check: run_unit_test must catch XML parse PermissionError and return structured failure
+        # 2. Integration check: run_unit_test must catch XML parse PermissionError, preserve returncode & stdout, and report XML access error
         with patch("importlib.util.find_spec", return_value=True):
             with patch("subprocess.run") as mock_run:
                 def fake_run(cmd, **kwargs):
@@ -586,7 +626,7 @@ class TestSynapseHarness(unittest.TestCase):
                         if arg.startswith("--junitxml="):
                             report_file = arg.split("=", 1)[1]
                             with open(report_file, "w", encoding="utf-8") as f:
-                                f.write("<testsuite/>")
+                                f.write('<testsuite tests="0"/>')
                     return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="1 passed\n", stderr="")
 
                 mock_run.side_effect = fake_run
@@ -595,28 +635,32 @@ class TestSynapseHarness(unittest.TestCase):
                     res = run_unit_test(sample_test)
                     self.assertFalse(res["pass"])
                     self.assertEqual(res["runner"], "pytest")
-                    self.assertEqual(res["returncode"], -1)
-                    self.assertIn("pytest 임시 디렉터리 격리 실패", res["output"])
+                    self.assertEqual(res["returncode"], 0)
+                    self.assertIn("[JUnit XML 접근 오류 (OSError)]", res["output"])
+                    self.assertIn("1 passed", res["output"])
 
                 # 3. TOCTOU scenario: stat succeeds, but FileNotFoundError occurs during parsing -> must classify as XML missing
                 with patch("verify.parse_pytest_xml", side_effect=FileNotFoundError("XML vanished")):
                     res2 = run_unit_test(sample_test)
                     self.assertFalse(res2["pass"])
                     self.assertEqual(res2["runner"], "pytest")
+                    self.assertEqual(res2["returncode"], 0)
                     self.assertIn("[JUnit XML 누락 FAIL]", res2["output"])
 
-                # 4. stat stage PermissionError -> must classify as isolation failure
+                # 4. stat stage PermissionError -> must classify as XML access error (preserving returncode and output)
                 with patch("os.stat", side_effect=PermissionError("stat denied")):
                     res3 = run_unit_test(sample_test)
                     self.assertFalse(res3["pass"])
                     self.assertEqual(res3["runner"], "pytest")
-                    self.assertIn("pytest 임시 디렉터리 격리 실패", res3["output"])
+                    self.assertEqual(res3["returncode"], 0)
+                    self.assertIn("[JUnit XML 접근 오류 (OSError)]", res3["output"])
 
                 # 5. stat stage FileNotFoundError -> must classify as XML missing
                 with patch("os.stat", side_effect=FileNotFoundError("no xml")):
                     res4 = run_unit_test(sample_test)
                     self.assertFalse(res4["pass"])
                     self.assertEqual(res4["runner"], "pytest")
+                    self.assertEqual(res4["returncode"], 0)
                     self.assertIn("[JUnit XML 누락 FAIL]", res4["output"])
 
     def test_unit_test_subprocess_spawn_filenotfound_handled(self):

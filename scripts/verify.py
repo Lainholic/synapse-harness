@@ -45,6 +45,10 @@ def parse_pytest_xml(xml_path):
         tree = ET.parse(xml_path)
         root = tree.getroot()
         
+        # 0. JUnit XML 표준 루트 태그 검증 (testsuite 또는 testsuites 허용)
+        if root.tag not in ("testsuite", "testsuites"):
+            return False, f"JUnit XML 루트 태그가 유효하지 않습니다 ('{root.tag}', 허용: testsuite, testsuites)"
+
         # 1. 루트가 testsuite인 경우와 하위 testsuite 요소를 모두 안전하게 포괄
         suites = []
         if root.tag == "testsuite":
@@ -60,6 +64,8 @@ def parse_pytest_xml(xml_path):
         total_skipped = 0
         
         for s in suites:
+            if "tests" not in s.attrib:
+                return False, f"suite '{s.attrib.get('name', '')}'에 필수 속성 'tests'가 누락되었습니다."
             try:
                 t = int(s.attrib.get("tests", 0))
                 f = int(s.attrib.get("failures", 0))
@@ -315,11 +321,17 @@ def run_unit_test(test_file, target_file=None):
                         "returncode": res.returncode
                     }
                 except OSError as e:
-                    return {"runner": "pytest", "pass": False, "output": f"pytest 임시 디렉터리 격리 실패(OSError): {e}", "returncode": -1}
+                    # XML 파일 접근/읽기 오류 (권한 부족 등) 발생 시 종료코드와 프로세스 출력을 보존하여 보고
+                    return {
+                        "runner": "pytest",
+                        "pass": False,
+                        "output": f"[JUnit XML 접근 오류 (OSError)]\n{e}\n{out}",
+                        "returncode": res.returncode
+                    }
                 except Exception as e:
-                    return {"runner": "pytest", "pass": False, "output": f"pytest XML 검증 예외 발생: {e}", "returncode": -1}
+                    return {"runner": "pytest", "pass": False, "output": f"pytest XML 검증 예외 발생: {e}", "returncode": res.returncode}
         except OSError as e:
-            return {"runner": "pytest", "pass": False, "output": f"pytest 임시 디렉터리 격리 실패(OSError): {e}", "returncode": -1}
+            return {"runner": "pytest", "pass": False, "output": f"pytest 임시 디렉터리 격리 실패(생성/정리 OSError): {e}", "returncode": -1}
         except Exception as e:
             return {"runner": "pytest", "pass": False, "output": f"pytest 임시 환경 예외 발생: {e}", "returncode": -1}
 
