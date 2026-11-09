@@ -135,6 +135,12 @@ class TestSynapseHarness(unittest.TestCase):
         passed, out = parse_pytest_output(0, raw_output)
         self.assertFalse(passed, "0 passed summary with warning text must fail.")
 
+    def test_pytest_parse_warning_with_skipped_only_fails(self):
+        # Warning contains '1 passed' text and summary is 1 skipped (no passed)
+        raw_output = "UserWarning: previous run had 1 passed\n1 skipped in 0.05s"
+        passed, out = parse_pytest_output(0, raw_output)
+        self.assertFalse(passed, "Skipped only with warning text must fail.")
+
     def test_unittest_parse_all_skipped_fails(self):
         # Directly test parse_unittest_output when all tests are skipped
         raw_output = "test_foo (tests.test_bar) ... skipped 'reason'\n\nRan 2 tests in 0.001s\n\nOK (skipped=2)"
@@ -145,6 +151,12 @@ class TestSynapseHarness(unittest.TestCase):
         raw_output = "\nRan 0 tests in 0.000s\n\nOK"
         passed, out = parse_unittest_output(0, raw_output)
         self.assertFalse(passed, "Ran 0 tests must fail.")
+
+    def test_unittest_parse_no_summary_fails(self):
+        # Missing unittest execution summary line must fail
+        raw_output = "module initialization message"
+        passed, out = parse_unittest_output(0, raw_output)
+        self.assertFalse(passed, "Missing summary must fail.")
 
     def test_sanitizer_scan(self):
         sample_text = f"{'Gemini'} {'1.5'} {'Pro'} and {'Claude'} {'3.5'} {'Sonnet'}."

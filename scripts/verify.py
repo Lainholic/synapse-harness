@@ -37,39 +37,44 @@ def find_paired_test(file_path):
     return None
 
 def parse_pytest_output(returncode, out):
-    """pytest 터미널 출력의 최종 요약 라인을 파싱하여 정확한 성공 여부를 판정합니다."""
+    """pytest 터미널 출력의 최종 요약 라인을 엄격히 파싱하여 성공 여부를 판정합니다."""
     lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
     if not lines:
         return False, "[테스트 미실행] 출력이 비어 있습니다."
         
-    # pytest의 최종 요약 라인은 주로 마지막에 위치하며 (= ... in ...s =) 형식을 가짐
-    summary_candidates = [
-        ln for ln in lines 
-        if bool(re.search(r"(=+.*in\s+[\d\.]+s.*=+|\b\d+\s+passed\b|\bno tests ran\b)", ln))
-    ]
-    summary_line = summary_candidates[-1] if summary_candidates else lines[-1]
+    # pytest의 요약 라인은 무조건 출력의 마지막 라인(last line)에 위치함
+    last_line = lines[-1]
     
-    # 요약 라인에서 단어 경계(\b) 기반으로 passed / 0 passed / no tests ran 정밀 판별
-    # 경고문 등 앞부분 텍스트에 우연히 포함된 '1 passed' 오탐 차단
-    has_explicit_pass = bool(re.search(r"\b[1-9]\d* passed\b", summary_line))
-    has_zero_pass = bool(re.search(r"\b0 passed\b", summary_line)) or "no tests ran" in summary_line or "collected 0 items" in summary_line
+    # 마지막 요약 라인에서만 통과 개수([1-9]\d* passed)를 단어 경계로 추출
+    # 경고문 등 본문 앞부분에 우연히 포함된 '1 passed'는 절대 요약 라인이 아니므로 차단됨
+    m_pass = re.search(r"\b([1-9]\d*)\s+passed\b", last_line)
+    m_zero_pass = re.search(r"\b0\s+passed\b", last_line)
+    has_no_tests = "no tests ran" in last_line or "collected 0 items" in last_line
     
-    passed = (returncode == 0) and has_explicit_pass and not has_zero_pass
+    passed = (returncode == 0) and bool(m_pass) and not bool(m_zero_pass) and not has_no_tests
     return passed, out if passed else f"[테스트 미실행 또는 실패]\n{out}"
 
 def parse_unittest_output(returncode, out):
-    """unittest 터미널 출력을 파싱하여 Ran 0 tests 및 전부 skipped를 차단합니다."""
+    """unittest 출력을 파싱하여 요약 라인 존재, 실행 수, skipped 방어를 검증합니다."""
     lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
     if not lines:
         return False, "[테스트 미실행] 출력이 비어 있습니다."
 
-    has_zero_tests = "Ran 0 tests" in out
-    all_skipped = bool(re.search(r"Ran (\d+) tests? in [0-9\.]+s\s+OK \(skipped=\1\)", out))
-    
-    if has_zero_tests or all_skipped:
-        return False, f"실행된 유효 테스트 케이스가 없거나 전부 건너뛰어졌습니다:\n{out}"
+    # 'Ran N tests in ...s' 요약 라인이 반드시 존재해야 함
+    m_ran = re.search(r"Ran (\d+) tests? in [0-9\.]+s", out)
+    if not m_ran:
+        return False, f"유효한 unittest 실행 요약이 없습니다:\n{out}"
         
-    passed = (returncode == 0)
+    ran_count = int(m_ran.group(1))
+    if ran_count == 0:
+        return False, f"실행된 테스트 케이스가 0개입니다:\n{out}"
+        
+    all_skipped = bool(re.search(rf"Ran {ran_count} tests? in [0-9\.]+s\s+OK \(skipped={ran_count}\)", out))
+    if all_skipped:
+        return False, f"실행된 유효 테스트가 모두 건너뛰어졌습니다 (skipped={ran_count}):\n{out}"
+
+    has_ok = bool(re.search(r"\bOK\b", out)) and not bool(re.search(r"\bFAILED\b", out))
+    passed = (returncode == 0) and has_ok
     return passed, out if passed else f"[테스트 실패]\n{out}"
 
 def run_unit_test(test_file):
