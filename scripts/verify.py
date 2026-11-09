@@ -281,21 +281,13 @@ def run_unit_test(test_file, target_file=None):
                     )
                     out = (res.stdout.strip() + "\n" + res.stderr.strip()).strip()
                     
-                    # JUnit XML 파일 상태 확인 (stat을 통해 PermissionError 등 OSError를 즉시 상위 OSError 처리기로 전파)
-                    try:
-                        st = os.stat(xml_report)
-                        if st.st_size == 0:
-                            return {
-                                "runner": "pytest",
-                                "pass": False,
-                                "output": f"[JUnit XML 누락 FAIL] pytest 보고서 XML 파일 크기가 0입니다:\n{out}",
-                                "returncode": res.returncode
-                            }
-                    except FileNotFoundError:
+                    # JUnit XML 파일 상태 확인 (stat 검사)
+                    st = os.stat(xml_report)
+                    if st.st_size == 0:
                         return {
                             "runner": "pytest",
                             "pass": False,
-                            "output": f"[JUnit XML 누락 FAIL] pytest 보고서 XML이 생성되지 않았습니다:\n{out}",
+                            "output": f"[JUnit XML 누락 FAIL] pytest 보고서 XML 파일 크기가 0입니다:\n{out}",
                             "returncode": res.returncode
                         }
 
@@ -308,10 +300,25 @@ def run_unit_test(test_file, target_file=None):
                     }
                 except subprocess.TimeoutExpired:
                     return {"runner": "pytest", "pass": False, "output": "pytest 실행 시간 초과 (15초)", "returncode": -1}
+                except FileNotFoundError:
+                    # stat 또는 파싱 시점의 파일 부재는 일관되게 XML 누락으로 분류
+                    return {
+                        "runner": "pytest",
+                        "pass": False,
+                        "output": f"[JUnit XML 누락 FAIL] pytest 보고서 XML이 존재하지 않습니다:\n{out}",
+                        "returncode": res.returncode
+                    }
                 except OSError as e:
                     return {"runner": "pytest", "pass": False, "output": f"pytest 임시 디렉터리 격리 실패(OSError): {e}", "returncode": -1}
                 except Exception as e:
                     return {"runner": "pytest", "pass": False, "output": f"pytest 실행 실패: {e}", "returncode": -1}
+        except FileNotFoundError as e:
+            return {
+                "runner": "pytest",
+                "pass": False,
+                "output": f"[JUnit XML 누락 FAIL] pytest 보고서 XML이 존재하지 않습니다: {e}",
+                "returncode": -1
+            }
         except OSError as e:
             return {"runner": "pytest", "pass": False, "output": f"pytest 임시 디렉터리 격리 실패(OSError): {e}", "returncode": -1}
         except Exception as e:

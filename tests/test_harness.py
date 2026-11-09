@@ -598,6 +598,13 @@ class TestSynapseHarness(unittest.TestCase):
                     self.assertEqual(res["returncode"], -1)
                     self.assertIn("pytest 임시 디렉터리 격리 실패", res["output"])
 
+                # 3. TOCTOU scenario: stat succeeds, but FileNotFoundError occurs during parsing -> must classify as XML missing
+                with patch("verify.parse_pytest_xml", side_effect=FileNotFoundError("XML vanished")):
+                    res2 = run_unit_test(sample_test)
+                    self.assertFalse(res2["pass"])
+                    self.assertEqual(res2["runner"], "pytest")
+                    self.assertIn("[JUnit XML 누락 FAIL]", res2["output"])
+
     def test_smoke_import_self_module_in_sys_modules(self):
         # Module accessing sys.modules[__name__] must succeed in smoke import without KeyError
         with tempfile.TemporaryDirectory() as tmp_dir:
