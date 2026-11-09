@@ -18,6 +18,7 @@ SCRIPTS_DIR = os.path.join(BASE_DIR, "scripts")
 if SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, SCRIPTS_DIR)
 
+from unittest.mock import patch
 from verify import (
     verify_file,
     run_unit_test,
@@ -104,11 +105,19 @@ class TestSynapseHarness(unittest.TestCase):
         res = verify_file(sample_path, strict=True)
         self.assertTrue(res["report"]["syntax_pass"])
         self.assertTrue(res["report"]["encoding_pass"])
-        # If ruff or mypy is not installed in the test environment, strict mode must fail overall
         if res["report"]["linter_status"] == "not_installed" or res["report"]["type_check_status"] == "not_installed":
             self.assertFalse(res["success"], "Strict mode must fail when external linters/type checkers are missing.")
         else:
             self.assertTrue(res["success"])
+
+    @patch("subprocess.run")
+    def test_verify_strict_mode_missing_linter_failure(self, mock_run):
+        # Force FileNotFoundError on subprocess.run to simulate missing ruff/mypy
+        mock_run.side_effect = FileNotFoundError("ruff not found")
+        sample_path = os.path.join(BASE_DIR, "tests", "sample_valid.py")
+        res = verify_file(sample_path, strict=True)
+        self.assertFalse(res["success"], "Strict mode must fail when external tools raise FileNotFoundError.")
+        self.assertEqual(res["report"]["linter_status"], "not_installed")
 
     def test_cli_execution_exit_codes(self):
         script_path = os.path.join(SCRIPTS_DIR, "verify.py")
@@ -231,6 +240,18 @@ class TestSynapseHarness(unittest.TestCase):
             passed, msg = parse_pytest_xml(xml_file)
             self.assertFalse(passed, "Stealth failure tag must be detected and rejected.")
 
+    def test_pytest_xml_skipped_count_mismatch_fails(self):
+        # Counterexample: skipped attribute claims 2, but only 1 skipped tag exists
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            xml_file = os.path.join(tmp_dir, "skip_mismatch.xml")
+            with open(xml_file, "w", encoding="utf-8") as f:
+                f.write('<testsuite name="pytest" errors="0" failures="0" skipped="2" tests="2">'
+                        '<testcase name="a"/>'
+                        '<testcase name="b"><skipped/></testcase>'
+                        '</testsuite>')
+            passed, msg = parse_pytest_xml(xml_file)
+            self.assertFalse(passed, "Mismatch between skipped attribute and skipped elements must fail.")
+
     def test_pytest_xml_all_skipped_fails(self):
         # All tests skipped (pure passed count is 0) must fail
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -253,6 +274,16 @@ class TestSynapseHarness(unittest.TestCase):
         raw_output = "Ran 1 test in 0.001s\n\nOK (unknown=1)"
         passed, out = parse_unittest_output(0, raw_output)
         self.assertFalse(passed, "Unknown key in unittest summary must fail.")
+
+    def test_unittest_parse_empty_token_trailing_comma_fails(self):
+        # Counterexample: trailing comma or consecutive empty commas in OK parenthesis
+        raw_output1 = "Ran 1 test in 0.001s\n\nOK (skipped=0,,)"
+        passed1, out1 = parse_unittest_output(0, raw_output1)
+        self.assertFalse(passed1, "Consecutive empty commas must fail.")
+
+        raw_output2 = "Ran 1 test in 0.001s\n\nOK (skipped=0,)"
+        passed2, out2 = parse_unittest_output(0, raw_output2)
+        self.assertFalse(passed2, "Trailing comma must fail.")
 
     def test_unittest_parse_clean_ok_passes(self):
         # Positive test: clean unittest OK output
@@ -370,6 +401,23 @@ class TestSynapseHarness(unittest.TestCase):
                 self.assertTrue(res["pass"])
             else:
                 self.assertTrue(res["pass"])
+
+    def test_unit_test_target_dir_import_success(self):
+        # Nested directory structure: project/calc.py and project/tests/test_calc.py
+        # run_unit_test must safely import calc from target_dir
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            calc_py = os.path.join(tmp_dir, "calc.py")
+            with open(calc_py, "w", encoding="utf-8") as f:
+                f.write("def add(a, b):\n    return a + b\n")
+
+            sub_tests = os.path.join(tmp_dir, "tests")
+            os.makedirs(sub_tests, exist_ok=True)
+            test_calc = os.path.join(sub_tests, "test_calc.py")
+            with open(test_calc, "w", encoding="utf-8") as f:
+                f.write("import unittest\nfrom calc import add\nclass TestCalc(unittest.TestCase):\n    def test_add(self):\n        self.assertEqual(add(1, 2), 3)\n")
+
+            res = run_unit_test(test_calc, target_file=calc_py)
+            self.assertTrue(res["pass"], f"Should succeed importing calc from target_dir: {res}")
 
     def test_sanitizer_scan(self):
         sample_text = f"{'Gemini'} {'1.5'} {'Pro'} and {'Claude'} {'3.5'} {'Sonnet'}."
