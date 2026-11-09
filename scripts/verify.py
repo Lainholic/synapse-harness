@@ -281,8 +281,17 @@ def run_unit_test(test_file, target_file=None):
                     )
                     out = (res.stdout.strip() + "\n" + res.stderr.strip()).strip()
                     
-                    # JUnit XML 필수 판정 (XML 미생성 또는 파싱 실패 시 텍스트 파서 폴백 금지)
-                    if not os.path.isfile(xml_report) or os.path.getsize(xml_report) == 0:
+                    # JUnit XML 파일 상태 확인 (stat을 통해 PermissionError 등 OSError를 즉시 상위 OSError 처리기로 전파)
+                    try:
+                        st = os.stat(xml_report)
+                        if st.st_size == 0:
+                            return {
+                                "runner": "pytest",
+                                "pass": False,
+                                "output": f"[JUnit XML 누락 FAIL] pytest 보고서 XML 파일 크기가 0입니다:\n{out}",
+                                "returncode": res.returncode
+                            }
+                    except FileNotFoundError:
                         return {
                             "runner": "pytest",
                             "pass": False,

@@ -567,7 +567,7 @@ class TestSynapseHarness(unittest.TestCase):
                 self.assertIn("임시 디렉터리 격리 실패", res["output"])
 
     def test_pytest_xml_oserror_propagates_to_runner(self):
-        # OSError (e.g. PermissionError) during XML parsing must raise OSError and be caught by run_unit_test
+        # 1. Direct parse_pytest_xml check: PermissionError during XML parsing must raise OSError
         with tempfile.TemporaryDirectory() as tmp_dir:
             dummy_xml = os.path.join(tmp_dir, "locked.xml")
             with open(dummy_xml, "w", encoding="utf-8") as f:
@@ -576,6 +576,27 @@ class TestSynapseHarness(unittest.TestCase):
             with patch("xml.etree.ElementTree.parse", side_effect=PermissionError("Locked file")):
                 with self.assertRaises(OSError):
                     parse_pytest_xml(dummy_xml)
+
+        # 2. Integration check: run_unit_test must catch XML parse PermissionError and return structured failure
+        with patch("importlib.util.find_spec", return_value=True):
+            with patch("subprocess.run") as mock_run:
+                def fake_run(cmd, **kwargs):
+                    # Create dummy xml_report so stat succeeds
+                    for arg in cmd:
+                        if arg.startswith("--junitxml="):
+                            report_file = arg.split("=", 1)[1]
+                            with open(report_file, "w", encoding="utf-8") as f:
+                                f.write("<testsuite/>")
+                    return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="1 passed\n", stderr="")
+
+                mock_run.side_effect = fake_run
+                with patch("verify.parse_pytest_xml", side_effect=PermissionError("XML access denied")):
+                    sample_test = os.path.join(BASE_DIR, "tests", "sample_calc_test.py")
+                    res = run_unit_test(sample_test)
+                    self.assertFalse(res["pass"])
+                    self.assertEqual(res["runner"], "pytest")
+                    self.assertEqual(res["returncode"], -1)
+                    self.assertIn("pytest 임시 디렉터리 격리 실패", res["output"])
 
     def test_smoke_import_self_module_in_sys_modules(self):
         # Module accessing sys.modules[__name__] must succeed in smoke import without KeyError
