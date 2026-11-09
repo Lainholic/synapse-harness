@@ -112,12 +112,28 @@ class TestSynapseHarness(unittest.TestCase):
 
     @patch("subprocess.run")
     def test_verify_strict_mode_missing_linter_failure(self, mock_run):
-        # Force FileNotFoundError on subprocess.run to simulate missing ruff/mypy
-        mock_run.side_effect = FileNotFoundError("ruff not found")
+        # 1. Simulate ruff missing only
+        def side_effect_ruff_missing(cmd, *args, **kwargs):
+            if cmd[0] == "ruff":
+                raise FileNotFoundError("ruff not found")
+            return subprocess.CompletedProcess(cmd, 0, stdout="Success: no issues found\n", stderr="")
+
+        mock_run.side_effect = side_effect_ruff_missing
         sample_path = os.path.join(BASE_DIR, "tests", "sample_valid.py")
-        res = verify_file(sample_path, strict=True)
-        self.assertFalse(res["success"], "Strict mode must fail when external tools raise FileNotFoundError.")
-        self.assertEqual(res["report"]["linter_status"], "not_installed")
+        res1 = verify_file(sample_path, strict=True)
+        self.assertFalse(res1["success"], "Strict mode must fail when only ruff is missing.")
+        self.assertEqual(res1["report"]["linter_status"], "not_installed")
+
+        # 2. Simulate mypy missing only
+        def side_effect_mypy_missing(cmd, *args, **kwargs):
+            if cmd[0] == "mypy":
+                raise FileNotFoundError("mypy not found")
+            return subprocess.CompletedProcess(cmd, 0, stdout="All checks passed\n", stderr="")
+
+        mock_run.side_effect = side_effect_mypy_missing
+        res2 = verify_file(sample_path, strict=True)
+        self.assertFalse(res2["success"], "Strict mode must fail when only mypy is missing.")
+        self.assertEqual(res2["report"]["type_check_status"], "not_installed")
 
     def test_cli_execution_exit_codes(self):
         script_path = os.path.join(SCRIPTS_DIR, "verify.py")
@@ -189,6 +205,27 @@ class TestSynapseHarness(unittest.TestCase):
                 f.write('<?xml version="1.0" encoding="utf-8"?><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="1"><testcase name="t1"><failure message="fail"/></testcase></testsuite>')
             passed_f, msg_f = parse_pytest_xml(xml_fail_file)
             self.assertFalse(passed_f, msg_f)
+
+    def test_pytest_xml_orphan_testcase_fails(self):
+        # Counterexample: orphan testcase tag outside of any testsuite
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            xml_file = os.path.join(tmp_dir, "orphan.xml")
+            with open(xml_file, "w", encoding="utf-8") as f:
+                f.write('<?xml version="1.0" encoding="utf-8"?><testsuites>'
+                        '<testsuite name="s1" errors="0" failures="0" skipped="0" tests="0"></testsuite>'
+                        '<testcase name="orphan"/>'
+                        '</testsuites>')
+            passed, msg = parse_pytest_xml(xml_file)
+            self.assertFalse(passed, "Orphan testcase outside testsuite must fail.")
+
+    def test_pytest_xml_empty_suite_counter_mismatch_fails(self):
+        # Counterexample: suite has 0 testcases but tests="1"
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            xml_file = os.path.join(tmp_dir, "empty_mismatch.xml")
+            with open(xml_file, "w", encoding="utf-8") as f:
+                f.write('<?xml version="1.0" encoding="utf-8"?><testsuite name="s1" errors="0" failures="0" skipped="0" tests="1"></testsuite>')
+            passed, msg = parse_pytest_xml(xml_file)
+            self.assertFalse(passed, "Empty suite with tests=1 must fail.")
 
     def test_pytest_xml_tests_count_mismatch_fails(self):
         # Counterexample: tests attribute claims 5 tests, but only 1 testcase tag exists
@@ -418,6 +455,45 @@ class TestSynapseHarness(unittest.TestCase):
 
             res = run_unit_test(test_calc, target_file=calc_py)
             self.assertTrue(res["pass"], f"Should succeed importing calc from target_dir: {res}")
+
+    def test_unit_test_target_dir_priority_over_cwd(self):
+        # Path collision test: target_dir/calc.py vs cwd/calc.py
+        # target_dir must take precedence over cwd so the genuine target is tested
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            # Genuine target
+            target_calc = os.path.join(tmp_dir, "calc.py")
+            with open(target_calc, "w", encoding="utf-8") as f:
+                f.write("def compute(): return 'genuine'\n")
+
+            sub_tests = os.path.join(tmp_dir, "tests")
+            os.makedirs(sub_tests, exist_ok=True)
+
+            # Shadowing collision file in tests directory
+            shadow_calc = os.path.join(sub_tests, "calc.py")
+            with open(shadow_calc, "w", encoding="utf-8") as f:
+                f.write("def compute(): return 'shadowed'\n")
+
+            test_calc = os.path.join(sub_tests, "test_calc.py")
+            with open(test_calc, "w", encoding="utf-8") as f:
+                f.write("import unittest\nfrom calc import compute\nclass TestPriority(unittest.TestCase):\n    def test_val(self):\n        self.assertEqual(compute(), 'genuine')\n")
+
+            res = run_unit_test(test_calc, target_file=target_calc)
+            self.assertTrue(res["pass"], f"Target dir must take precedence over cwd: {res}")
+
+    def test_smoke_import_with_sibling_module(self):
+        # Sibling import test: main.py imports helper.py in the same directory
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            helper_py = os.path.join(tmp_dir, "helper.py")
+            with open(helper_py, "w", encoding="utf-8") as f:
+                f.write("def get_data(): return 42\n")
+
+            main_py = os.path.join(tmp_dir, "main.py")
+            with open(main_py, "w", encoding="utf-8") as f:
+                f.write("import helper\nres = helper.get_data()\n")
+
+            res = verify_file(main_py, smoke=True)
+            self.assertTrue(res["success"], f"Smoke test with sibling import must succeed: {res}")
+            self.assertEqual(res["report"]["smoke_status"], "pass")
 
     def test_sanitizer_scan(self):
         sample_text = f"{'Gemini'} {'1.5'} {'Pro'} and {'Claude'} {'3.5'} {'Sonnet'}."

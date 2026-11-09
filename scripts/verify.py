@@ -76,17 +76,24 @@ def parse_pytest_xml(xml_path):
             total_errors += e
             total_skipped += sk
 
-            # suite별 testcase 및 태그 개수 대조 (suite에 직접 속한 testcase)
+            # suite별 testcase 및 태그 개수 대조 (suite에 직접 속한 testcase, 0개라도 속성과 엄격 대조)
             suite_cases = s.findall("./testcase")
-            if suite_cases:
-                if t != len(suite_cases):
-                    return False, f"suite '{s.attrib.get('name', '')}'의 tests 속성({t})과 실제 testcase 태그 수({len(suite_cases)})가 불일치합니다."
-                suite_skipped = len([c for c in suite_cases if c.find("skipped") is not None])
-                if sk != suite_skipped:
-                    return False, f"suite '{s.attrib.get('name', '')}'의 skipped 속성({sk})과 실제 skipped 태그 수({suite_skipped})가 불일치합니다."
+            if t != len(suite_cases):
+                return False, f"suite '{s.attrib.get('name', '')}'의 tests 속성({t})과 실제 testcase 태그 수({len(suite_cases)})가 불일치합니다."
+            suite_skipped = len([c for c in suite_cases if c.find("skipped") is not None])
+            if sk != suite_skipped:
+                return False, f"suite '{s.attrib.get('name', '')}'의 skipped 속성({sk})과 실제 skipped 태그 수({suite_skipped})가 불일치합니다."
 
-        # 2. XML 전체 실제 태그 전수 수집 및 카운트
-        all_cases = root.findall(".//testcase")
+        # 2. XML 전체 실제 태그 전수 수집 및 고아 태그 거부
+        all_suite_cases = [c for s in suites for c in s.findall("./testcase")]
+        direct_all_cases = root.findall(".//testcase")
+        if root.tag == "testcase":
+            direct_all_cases.append(root)
+            
+        if len(all_suite_cases) != len(direct_all_cases):
+            return False, "testsuite 외부에 위치한 비정상 고아 <testcase> 태그가 검출되었습니다."
+
+        all_cases = all_suite_cases
         direct_failures = len(root.findall(".//failure"))
         direct_errors = len(root.findall(".//error"))
         direct_skipped = len(root.findall(".//skipped"))
@@ -255,8 +262,8 @@ def run_unit_test(test_file, target_file=None):
                     f"target_dir = {repr(target_dir)}\n"
                     "sys.path = [p for p in sys.path if p not in ('', '.', cwd, target_dir)]\n"
                     "import pytest\n"
-                    "if target_dir and target_dir not in sys.path: sys.path.insert(0, target_dir)\n"
                     "if cwd not in sys.path: sys.path.insert(0, cwd)\n"
+                    "if target_dir and target_dir not in sys.path: sys.path.insert(0, target_dir)\n"
                     "sys.exit(pytest.main(sys.argv[1:]))\n"
                 )
                 cmd = [sys.executable] + safe_path_args + ["-c", runner_code, "-q", f"--junitxml={xml_report}", test_name]
@@ -299,8 +306,8 @@ def run_unit_test(test_file, target_file=None):
             f"target_dir = {repr(target_dir)}\n"
             "sys.path = [p for p in sys.path if p not in ('', '.', cwd, target_dir)]\n"
             "import unittest\n"
-            "if target_dir and target_dir not in sys.path: sys.path.insert(0, target_dir)\n"
             "if cwd not in sys.path: sys.path.insert(0, cwd)\n"
+            "if target_dir and target_dir not in sys.path: sys.path.insert(0, target_dir)\n"
             "unittest.main(module=None, argv=[sys.argv[0]] + sys.argv[1:])\n"
         )
         cmd = [sys.executable] + safe_path_args + ["-c", runner_code, test_name]
@@ -326,14 +333,18 @@ def run_unit_test(test_file, target_file=None):
         return {"runner": "unittest", "pass": False, "output": f"unittest 실행 실패: {e}", "returncode": -1}
 
 def run_smoke_import(file_path):
-    """모듈을 서브프로세스에서 임포트하여 즉각적인 초기화 런타임 크래시를 검증합니다."""
+    """모듈을 서브프로세스에서 임포트하여 즉각적인 초기화 런타임 크래시를 검증합니다.
+    대상 모듈이 속한 디렉터리를 sys.path에 안전하게 주입하여 형제 모듈 임포트를 보장합니다.
+    """
     code = (
-        "import sys, importlib.util;"
-        "sys.dont_write_bytecode = True;"
-        "target = sys.argv[1];"
-        "spec = importlib.util.spec_from_file_location('__harness_smoke__', target);"
-        "mod = importlib.util.module_from_spec(spec);"
-        "spec.loader.exec_module(mod);"
+        "import sys, os, importlib.util\n"
+        "sys.dont_write_bytecode = True\n"
+        "target = sys.argv[1]\n"
+        "target_dir = os.path.dirname(os.path.abspath(target))\n"
+        "if target_dir not in sys.path: sys.path.insert(0, target_dir)\n"
+        "spec = importlib.util.spec_from_file_location('__harness_smoke__', target)\n"
+        "mod = importlib.util.module_from_spec(spec)\n"
+        "spec.loader.exec_module(mod)\n"
     )
     try:
         res = subprocess.run(

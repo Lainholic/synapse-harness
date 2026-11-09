@@ -114,8 +114,8 @@ Output is emitted in structured JSON:
     "syntax_pass": true,
     "linter_status": "pass",
     "details": [
-      "py_compile syntax check PASS (isolated temporary compilation)",
-      "ruff static linter PASS (clean code)"
+      "py_compile 구문 검사 PASS (격리 컴파일 완료)",
+      "ruff 정적 린터 PASS (코드 무결)"
     ]
   }
 }
