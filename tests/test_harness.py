@@ -566,6 +566,17 @@ class TestSynapseHarness(unittest.TestCase):
                 self.assertEqual(res["runner"], "pytest")
                 self.assertIn("임시 디렉터리 격리 실패", res["output"])
 
+    def test_smoke_import_self_module_in_sys_modules(self):
+        # Module accessing sys.modules[__name__] must succeed in smoke import without KeyError
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sample_py = os.path.join(tmp_dir, "self_ref.py")
+            with open(sample_py, "w", encoding="utf-8") as f:
+                f.write("import sys\ncur_mod = sys.modules[__name__]\nassert cur_mod is not None\n")
+
+            res = verify_file(sample_py, smoke=True)
+            self.assertTrue(res["success"], f"Module accessing sys.modules[__name__] must succeed: {res}")
+            self.assertEqual(res["report"]["smoke_status"], "pass")
+
     def test_smoke_import_with_sibling_module(self):
         # Sibling import test: main.py imports helper.py in the same directory
         with tempfile.TemporaryDirectory() as tmp_dir:

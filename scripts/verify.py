@@ -296,6 +296,8 @@ def run_unit_test(test_file, target_file=None):
                     }
                 except subprocess.TimeoutExpired:
                     return {"runner": "pytest", "pass": False, "output": "pytest 실행 시간 초과 (15초)", "returncode": -1}
+                except OSError as e:
+                    return {"runner": "pytest", "pass": False, "output": f"pytest 임시 디렉터리 격리 실패(OSError): {e}", "returncode": -1}
                 except Exception as e:
                     return {"runner": "pytest", "pass": False, "output": f"pytest 실행 실패: {e}", "returncode": -1}
         except OSError as e:
@@ -339,7 +341,8 @@ def run_unit_test(test_file, target_file=None):
 
 def run_smoke_import(file_path):
     """모듈을 서브프로세스에서 임포트하여 즉각적인 초기화 런타임 크래시를 검증합니다.
-    대상 모듈 디렉터리를 sys.path 맨 앞(sys.path[0])에 확실히 승격시켜 형제 모듈 임포트를 최우선 보장합니다.
+    대상 모듈 디렉터리를 sys.path 맨 앞(sys.path[0])에 확실히 승격시켜 형제 모듈 임포트를 최우선 보장하며,
+    표준 importlib 규격에 따라 실행 전 sys.modules에 모듈 인스턴스를 등록합니다.
     """
     code = (
         "import sys, os, importlib.util\n"
@@ -350,6 +353,7 @@ def run_smoke_import(file_path):
         "sys.path.insert(0, target_dir)\n"
         "spec = importlib.util.spec_from_file_location('__harness_smoke__', target)\n"
         "mod = importlib.util.module_from_spec(spec)\n"
+        "sys.modules[spec.name] = mod\n"
         "spec.loader.exec_module(mod)\n"
     )
     try:
