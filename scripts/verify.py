@@ -39,15 +39,17 @@ def find_paired_test(file_path):
 
 def parse_pytest_xml(xml_path):
     """JUnit XML 결과 파일을 전수 파싱하여 텍스트 출력 의존성 없는 구조화된 판정을 내립니다.
-    모든 <testsuite> 요소를 순회 집계하고, 태그 및 카운터 일관성을 엄격히 검증합니다.
+    루트 및 중첩된 모든 <testsuite>를 완전 탐색하고, 실제 <testcase> 태그와 카운터의 1:1 일치성을 엄격히 검증합니다.
     """
     try:
         tree = ET.parse(xml_path)
         root = tree.getroot()
         
-        suites = root.findall(".//testsuite")
-        if not suites and root.tag == "testsuite":
-            suites = [root]
+        # 1. 루트가 testsuite인 경우와 하위 testsuite 요소를 모두 안전하게 포괄
+        suites = []
+        if root.tag == "testsuite":
+            suites.append(root)
+        suites.extend(root.findall(".//testsuite"))
             
         if not suites:
             return False, "JUnit XML 내에서 유효한 <testsuite> 요소를 찾을 수 없습니다."
@@ -74,19 +76,32 @@ def parse_pytest_xml(xml_path):
             total_errors += e
             total_skipped += sk
 
-        # XML 내 실제 <failure>, <error> 태그 직접 전수 카운트
+        # 2. XML 내 실제 태그 전수 수집 및 카운트
+        all_cases = root.findall(".//testcase")
         direct_failures = len(root.findall(".//failure"))
         direct_errors = len(root.findall(".//error"))
+        direct_skipped = len(root.findall(".//skipped"))
         
+        # 실제 testcase 요소가 없거나 속성값과 불일치하는 가짜 XML 거부
+        if len(all_cases) == 0:
+            return False, f"XML 내에 실제 <testcase> 태그가 존재하지 않습니다 (tests 속성={total_tests})"
+            
+        if total_tests != len(all_cases):
+            return False, f"tests 속성값({total_tests})과 실제 <testcase> 태그 수({len(all_cases)})가 불일치합니다."
+
         if total_failures > 0 or total_errors > 0 or direct_failures > 0 or direct_errors > 0:
             return False, f"테스트 실패 또는 오류 발생 (failures={total_failures}, errors={total_errors}, direct_fail={direct_failures}, direct_err={direct_errors})"
 
-        # 유효 순수 성공 테스트 수 검증 (xfail/skip/0 tests 방어)
-        passed_count = total_tests - total_failures - total_errors - total_skipped
-        if total_tests == 0 or passed_count <= 0:
-            return False, f"실행된 유효 성공 테스트가 0개입니다 (tests={total_tests}, skipped={total_skipped}, passed={passed_count})"
+        # 3. 실제 순수 성공(passed) testcase 추출 (failure, error, skipped가 없는 testcase)
+        pure_passed_cases = [
+            c for c in all_cases 
+            if c.find("failure") is None and c.find("error") is None and c.find("skipped") is None
+        ]
+        
+        if len(pure_passed_cases) == 0:
+            return False, f"실행된 테스트 중 순수 통과한 <testcase>가 0개입니다 (전체={len(all_cases)}, skipped={direct_skipped})"
             
-        return True, f"JUnit XML 구조 판정 성공 (tests={total_tests}, passed={passed_count}, skipped={total_skipped}, failures={total_failures}, errors={total_errors})"
+        return True, f"JUnit XML 구조 판정 성공 (tests={total_tests}, passed={len(pure_passed_cases)}, skipped={total_skipped}, failures={total_failures}, errors={total_errors})"
     except Exception as e:
         return False, f"XML 파싱 또는 검증 예외: {e}"
 
@@ -154,23 +169,30 @@ def parse_unittest_output(returncode, out):
     if not full_status.startswith("OK"):
         return False, f"[테스트 실패]\n{out}"
 
-    # OK 괄호 상세 내용 검증
+    # OK 괄호 상세 내용 검증 (엄격한 화이트리스트 토큰 파서)
     if detail:
-        # expected failures, skipped, unexpected successes 제거 후 불법/모순 키워드(단독 failures, errors 등) 검사
-        sanitized_detail = re.sub(r"\bexpected failures=\d+\b", "", detail)
-        sanitized_detail = re.sub(r"\bskipped=\d+\b", "", sanitized_detail)
-        sanitized_detail = re.sub(r"\bunexpected successes=\d+\b", "", sanitized_detail)
+        # 쉼표 단위로 분리하여 각 토큰을 완전 검증
+        tokens = [t.strip() for t in detail.split(",") if t.strip()]
+        if not tokens:
+            return False, f"[형식 오류] OK 상태 괄호 내용이 올바르지 않습니다: {detail}"
+
+        counters = {}
+        token_pattern = re.compile(r"^(skipped|expected failures|unexpected successes)=(\d+)$")
         
-        if re.search(r"\b(?:failures|errors)\b", sanitized_detail):
-            return False, f"[모순 상태 검출] OK 상태 괄호 내에 비정상 실패 키워드가 포함되어 있습니다: {detail}"
+        for t in tokens:
+            m = token_pattern.match(t)
+            if not m:
+                return False, f"[허용되지 않은 토큰] unittest 요약 괄호 내에 비표준 또는 모순된 항목이 포함되어 있습니다: '{t}' in '{detail}'"
+            key = m.group(1)
+            val = int(m.group(2))
+            
+            if key in counters:
+                return False, f"[중복 키 검출] unittest 요약 괄호 내에 중복된 카운터 키가 존재합니다: '{key}' in '{detail}'"
+            counters[key] = val
 
-        m_skip = re.search(r"\bskipped=(\d+)\b", detail)
-        m_expected = re.search(r"\bexpected failures=(\d+)\b", detail)
-        m_unexpected = re.search(r"\bunexpected successes=(\d+)\b", detail)
-
-        skipped_count = int(m_skip.group(1)) if m_skip else 0
-        expected_count = int(m_expected.group(1)) if m_expected else 0
-        unexpected_count = int(m_unexpected.group(1)) if m_unexpected else 0
+        skipped_count = counters.get("skipped", 0)
+        expected_count = counters.get("expected failures", 0)
+        unexpected_count = counters.get("unexpected successes", 0)
 
         if unexpected_count > 0:
             return False, f"예상치 못한 성공(unexpected successes={unexpected_count})이 발생하였습니다:\n{out}"
@@ -184,14 +206,14 @@ def parse_unittest_output(returncode, out):
     return passed, out if passed else f"[테스트 실패 (종료코드={returncode})]\n{out}"
 
 def run_unit_test(test_file):
-    """동일한 Python 인터프리터의 pytest(JUnit XML 필수) 또는 unittest로 테스트 파일을 격리 실행합니다."""
+    """동일한 Python 인터프리터의 pytest(JUnit XML 필수) 또는 unittest로 테스트 파일을 격리 실행합니다.
+    로컬 디렉터리의 모듈 하이재킹(pytest.py, unittest.py 등)을 원천 방어하기 위해 러너 실행 경로를 엄격히 통제합니다.
+    """
     test_dir = os.path.dirname(os.path.abspath(test_file))
     test_name = os.path.basename(test_file)
     env = os.environ.copy()
-    existing_pythonpath = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = f"{test_dir}{os.pathsep}{existing_pythonpath}"
     env["PYTHONDONTWRITEBYTECODE"] = "1"
-    env["PYTHONSAFEPATH"] = "1"  # 현재 디렉터리의 모듈 하이재킹 차단
+    env["PYTHONSAFEPATH"] = "1"
 
     # 1. pytest 가용 여부 사전 검사
     has_pytest = False
@@ -201,14 +223,23 @@ def run_unit_test(test_file):
     except Exception:
         has_pytest = False
 
-    # Python 3.11+ 격리 플래그 (-P: sys.path[0]에 현재 디렉터리 삽입 방지)
+    # Python 3.11+ 격리 플래그 (-P: sys.path[0]에 현재 디렉터리 자동 삽입 방지)
     safe_path_args = ["-P"] if sys.version_info >= (3, 11) else []
 
     if has_pytest:
         with tempfile.TemporaryDirectory() as tmp_dir:
             xml_report = os.path.join(tmp_dir, "junit_report.xml")
             try:
-                cmd = [sys.executable] + safe_path_args + ["-m", "pytest", "-q", f"--junitxml={xml_report}", test_name]
+                # 러너 스크립트: sys.path에서 현재 작업 디렉터리를 사전 제거하여 설치된 정품 pytest를 우선 로드
+                runner_code = (
+                    "import sys, os\n"
+                    "cwd = os.getcwd()\n"
+                    "sys.path = [p for p in sys.path if p not in ('', '.', cwd)]\n"
+                    "import pytest\n"
+                    "if cwd not in sys.path: sys.path.insert(0, cwd)\n"
+                    "sys.exit(pytest.main(sys.argv[1:]))\n"
+                )
+                cmd = [sys.executable] + safe_path_args + ["-c", runner_code, "-q", f"--junitxml={xml_report}", test_name]
                 res = subprocess.run(
                     cmd,
                     cwd=test_dir,
@@ -242,7 +273,15 @@ def run_unit_test(test_file):
 
     # 2. pytest 미설치 시 파이썬 내장 unittest로 실행
     try:
-        cmd = [sys.executable] + safe_path_args + ["-m", "unittest", test_name]
+        runner_code = (
+            "import sys, os\n"
+            "cwd = os.getcwd()\n"
+            "sys.path = [p for p in sys.path if p not in ('', '.', cwd)]\n"
+            "import unittest\n"
+            "if cwd not in sys.path: sys.path.insert(0, cwd)\n"
+            "unittest.main(module=None, argv=[sys.argv[0]] + sys.argv[1:])\n"
+        )
+        cmd = [sys.executable] + safe_path_args + ["-c", runner_code, test_name]
         res = subprocess.run(
             cmd,
             cwd=test_dir,
