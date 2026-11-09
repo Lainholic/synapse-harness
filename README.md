@@ -141,7 +141,7 @@ We believe in engineering transparency. Please review the following limitations 
    - Comprehensive AST compilation (`py_compile`) and linter checks (`ruff`) are currently fully implemented for **Python only**.
    - Other formats (`.json`, `.md`, `.js`, `.ts`, `.html`) are verified for UTF-8 integrity and syntax parsing (for JSON). Dedicated language linters (e.g. ESLint, TypeScript compiler) are not yet integrated into Stage 1.
 2. **Static Syntax vs. Opt-In Runtime Verification**:
-   - By default, `verify.py` strictly performs non-executing static analysis.
+   - By default, `verify.py` performs static analysis without importing the target module or executing paired tests (note that external analyzers like ruff and mypy execute as host processes under user privileges).
    - When explicitly opted-in via `--test`, it discovers and executes paired unit tests (`test_<name>.py`) using `pytest` or Python's built-in `unittest`. If no unit test exists or `--test` is omitted, runtime logic flaws cannot be determined without test coverage or Stage 2 reviewer critique.
 3. **Agent-Mediated Stages 2 & 3**:
    - Stage 1 runs autonomously as a standalone CLI tool.

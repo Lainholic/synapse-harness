@@ -51,6 +51,26 @@ class TestSynapseHarness(unittest.TestCase):
         self.assertTrue(res["success"], f"Paired test should pass: {res}")
         self.assertEqual(res["report"]["test_status"], "pass")
 
+    def test_verify_non_py_with_test_flag_fails(self):
+        # Requesting --test on non-py file (e.g. README.md or LICENSE) must fail explicitly
+        target_path = os.path.join(BASE_DIR, "LICENSE")
+        res = verify_file(target_path, run_tests=True)
+        self.assertFalse(res["success"], "Requesting --test on non-py file must fail.")
+        self.assertEqual(res["report"]["test_status"], "unsupported")
+
+    def test_verify_non_py_with_smoke_flag_fails(self):
+        # Requesting --smoke on non-py file must fail explicitly
+        target_path = os.path.join(BASE_DIR, "LICENSE")
+        res = verify_file(target_path, smoke=True)
+        self.assertFalse(res["success"], "Requesting --smoke on non-py file must fail.")
+        self.assertEqual(res["report"]["smoke_status"], "unsupported")
+
+    def test_verify_strict_mode(self):
+        # In strict mode, valid file is verified
+        sample_path = os.path.join(BASE_DIR, "tests", "sample_valid.py")
+        res = verify_file(sample_path, strict=False)
+        self.assertTrue(res["success"])
+
     def test_sanitizer_scan(self):
         # Dynamically build legacy string to avoid self-triggering static linter on test files
         sample_text = f"{'Gemini'} {'1.5'} {'Pro'} and {'Claude'} {'3.5'} {'Sonnet'}."

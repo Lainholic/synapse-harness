@@ -63,10 +63,14 @@ def run_unit_test(test_file):
                 timeout=15
             )
             out = (res.stdout.strip() + "\n" + res.stderr.strip()).strip()
+            
+            # 테스트가 0개 수집되었거나 실행되지 않은 경우 성공 오인 방지
+            is_empty = "no tests ran" in out or "collected 0 items" in out or "0 passed" in out
+            passed = (res.returncode == 0) and not is_empty
             return {
                 "runner": "pytest",
-                "pass": res.returncode == 0,
-                "output": out,
+                "pass": passed,
+                "output": out if passed else f"[테스트 미실행 또는 실패]\n{out}",
                 "returncode": res.returncode
             }
         except subprocess.TimeoutExpired:
@@ -162,6 +166,17 @@ def verify_file(file_path, run_tests=False, smoke=False, strict=False):
     
     overall_success = True
 
+    # [핵심 검증] 비 Python 파일에 --test 또는 --smoke 플래그가 요청된 경우 즉각 실패 처리
+    if ext != ".py" and (run_tests or smoke):
+        overall_success = False
+        if run_tests:
+            report["test_status"] = "unsupported"
+            report["details"].append(f"[옵션 오류] --test 옵션은 Python(.py) 대상에서만 지원됩니다. ({ext} 파일 미지원)")
+        if smoke:
+            report["smoke_status"] = "unsupported"
+            report["details"].append(f"[옵션 오류] --smoke 옵션은 Python(.py) 대상에서만 지원됩니다. ({ext} 파일 미지원)")
+        return {"success": False, "report": report}
+
     # 1. 파이썬 문법, 린터, 타입, 옵션별 런타임 검사
     if ext == ".py":
         # 인코딩 검사
@@ -175,7 +190,7 @@ def verify_file(file_path, run_tests=False, smoke=False, strict=False):
             report["details"].append(f"UTF-8 디코딩 오류: {str(e)}")
             return {"success": False, "report": report}
 
-        # __pycache__ 잔여 방지를 위해 임시 디렉터리에서 컴파일 수행
+        # 자체 바이트코드 잔여 방지를 위해 임시 디렉터리에서 컴파일 수행
         with tempfile.TemporaryDirectory() as tmp_dir:
             temp_cfile = os.path.join(tmp_dir, "temp_check.pyc")
             try:
@@ -278,7 +293,7 @@ def verify_file(file_path, run_tests=False, smoke=False, strict=False):
                     report["details"].append(f"[단위 테스트 FAIL] ({test_res['runner']}):\n{test_res['output']}")
             else:
                 report["test_status"] = "not_found"
-                overall_success = False  # 사용자가 명시적으로 --test를 요청했으나 테스트가 없으므로 불완전/실패 처리
+                overall_success = False
                 report["details"].append("[단위 테스트 FAIL] 대응하는 단위 테스트 파일(test_*.py)을 찾지 못하여 테스트를 수행할 수 없습니다.")
 
     # 2. JSON 파싱 검사 (문법 파싱)
@@ -303,7 +318,7 @@ def verify_file(file_path, run_tests=False, smoke=False, strict=False):
             report["details"].append(f"JSON 파싱 실패: {str(e)}")
             return {"success": False, "report": report}
 
-    # 3. 기타 텍스트/마크다운 파일 (LICENSE 등 확장자 없는 일반 텍스트 포함)
+    # 3. 기타 텍스트/마크다운 파일
     elif ext in ("", ".md", ".txt", ".cs", ".html", ".css", ".js", ".ts") or os.path.basename(file_path).lower() in ("license", "dockerfile", "makefile"):
         try:
             with open(file_path, "r", encoding="utf-8") as f:
@@ -327,7 +342,7 @@ def verify_file(file_path, run_tests=False, smoke=False, strict=False):
         report["details"].append(f"지원되지 않는 확장자({ext})입니다.")
         overall_success = False
 
-    # 4. 공통 구형 모델명 기계적 린터 검사 (검사기 자체의 도구 파일은 제외)
+    # 4. 공통 구형 모델명 기계적 린터 검사
     canon_target = os.path.realpath(file_path)
     is_self_tool = (
         canon_target == os.path.realpath(__file__) or
@@ -361,14 +376,17 @@ def verify_file(file_path, run_tests=False, smoke=False, strict=False):
             report["details"].append("model_sanitizer 모듈을 찾을 수 없어 구형 모델명 검사를 건너뛰었습니다.")
             if strict:
                 overall_success = False
+    elif is_self_tool:
+        report["model_scan_status"] = "skipped"
+        report["details"].append("자체 도구/테스트 파일은 구형 모델명 검사에서 명시적으로 제외되었습니다.")
 
     return {"success": overall_success, "report": report}
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Synapse Harness 결정론적 기계 검증 엔진")
     parser.add_argument("target", help="검증할 대상 파일 경로")
-    parser.add_argument("--test", action="store_true", help="명시적 옵션: 대응하는 단위 테스트(test_*.py)를 탐색하여 안전하게 실행합니다.")
-    parser.add_argument("--smoke", action="store_true", help="명시적 옵션: 격리된 서브프로세스에서 모듈 임포트를 시험하여 초기화 크래시를 검증합니다.")
+    parser.add_argument("--test", action="store_true", help="명시적 옵션: 대응하는 단위 테스트(test_*.py)를 탐색하여 안전하게 실행합니다. (파이썬 전용)")
+    parser.add_argument("--smoke", action="store_true", help="명시적 옵션: 격리된 서브프로세스에서 모듈 임포트를 시험하여 초기화 크래시를 검증합니다. (파이썬 전용)")
     parser.add_argument("--strict", action="store_true", help="엄격 모드: ruff, mypy 등 외부 분석 도구 미설치 시 실패로 처리합니다.")
     args = parser.parse_args()
 
