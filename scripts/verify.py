@@ -607,6 +607,9 @@ def verify_file(file_path, run_tests=False, smoke=False, strict=False):
         canon_target == os.path.realpath(__file__) or
         canon_target == os.path.realpath(os.path.join(script_dir, "model_sanitizer.py")) or
         canon_target == os.path.realpath(os.path.join(script_dir, "..", "SKILL.md")) or
+        canon_target == os.path.realpath(os.path.join(script_dir, "..", "README.md")) or
+        canon_target == os.path.realpath(os.path.join(script_dir, "..", "README.ko.md")) or
+        (is_inside_harness and os.path.basename(canon_target).lower() in ("readme.md", "readme.ko.md", "skill.md")) or
         (is_inside_harness and os.path.basename(canon_target).startswith("test_"))
     )
     
