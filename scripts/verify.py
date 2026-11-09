@@ -121,6 +121,9 @@ def parse_pytest_xml(xml_path):
             return False, f"실행된 테스트 중 순수 통과한 <testcase>가 0개입니다 (전체={len(all_cases)}, skipped={direct_skipped})"
             
         return True, f"JUnit XML 구조 판정 성공 (tests={total_tests}, passed={len(pure_passed_cases)}, skipped={total_skipped}, failures={total_failures}, errors={total_errors})"
+    except OSError:
+        # 파일 시스템 접근 오류(PermissionError 등)는 호출부 run_unit_test의 OSError 처리기로 상위 전파
+        raise
     except Exception as e:
         return False, f"XML 파싱 또는 검증 예외: {e}"
 

@@ -566,6 +566,17 @@ class TestSynapseHarness(unittest.TestCase):
                 self.assertEqual(res["runner"], "pytest")
                 self.assertIn("임시 디렉터리 격리 실패", res["output"])
 
+    def test_pytest_xml_oserror_propagates_to_runner(self):
+        # OSError (e.g. PermissionError) during XML parsing must raise OSError and be caught by run_unit_test
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            dummy_xml = os.path.join(tmp_dir, "locked.xml")
+            with open(dummy_xml, "w", encoding="utf-8") as f:
+                f.write("<testsuite/>")
+
+            with patch("xml.etree.ElementTree.parse", side_effect=PermissionError("Locked file")):
+                with self.assertRaises(OSError):
+                    parse_pytest_xml(dummy_xml)
+
     def test_smoke_import_self_module_in_sys_modules(self):
         # Module accessing sys.modules[__name__] must succeed in smoke import without KeyError
         with tempfile.TemporaryDirectory() as tmp_dir:
