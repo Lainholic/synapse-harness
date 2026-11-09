@@ -252,51 +252,56 @@ def run_unit_test(test_file, target_file=None):
     safe_path_args = ["-P"] if sys.version_info >= (3, 11) else []
 
     if has_pytest:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            xml_report = os.path.join(tmp_dir, "junit_report.xml")
-            try:
-                # 러너 스크립트: sys.path에서 작업 디렉터리를 사전 제거하여 정품 pytest를 우선 로드한 뒤 대상 모듈 경로를 주입
-                runner_code = (
-                    "import sys, os\n"
-                    "cwd = os.getcwd()\n"
-                    f"target_dir = {repr(target_dir)}\n"
-                    "sys.path = [p for p in sys.path if p not in ('', '.', cwd, target_dir)]\n"
-                    "import pytest\n"
-                    "if cwd not in sys.path: sys.path.insert(0, cwd)\n"
-                    "if target_dir and target_dir not in sys.path: sys.path.insert(0, target_dir)\n"
-                    "sys.exit(pytest.main(sys.argv[1:]))\n"
-                )
-                cmd = [sys.executable] + safe_path_args + ["-c", runner_code, "-q", f"--junitxml={xml_report}", test_name]
-                res = subprocess.run(
-                    cmd,
-                    cwd=test_dir,
-                    env=env,
-                    capture_output=True,
-                    text=True,
-                    timeout=15
-                )
-                out = (res.stdout.strip() + "\n" + res.stderr.strip()).strip()
-                
-                # JUnit XML 필수 판정 (XML 미생성 또는 파싱 실패 시 텍스트 파서 폴백 금지)
-                if not os.path.isfile(xml_report) or os.path.getsize(xml_report) == 0:
+        try:
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                xml_report = os.path.join(tmp_dir, "junit_report.xml")
+                try:
+                    # 러너 스크립트: sys.path에서 작업 디렉터리를 사전 제거하여 정품 pytest를 우선 로드한 뒤 대상 모듈 경로를 주입
+                    runner_code = (
+                        "import sys, os\n"
+                        "cwd = os.getcwd()\n"
+                        f"target_dir = {repr(target_dir)}\n"
+                        "sys.path = [p for p in sys.path if p not in ('', '.', cwd, target_dir)]\n"
+                        "import pytest\n"
+                        "if cwd not in sys.path: sys.path.insert(0, cwd)\n"
+                        "if target_dir and target_dir not in sys.path: sys.path.insert(0, target_dir)\n"
+                        "sys.exit(pytest.main(sys.argv[1:]))\n"
+                    )
+                    cmd = [sys.executable] + safe_path_args + ["-c", runner_code, "-q", f"--junitxml={xml_report}", test_name]
+                    res = subprocess.run(
+                        cmd,
+                        cwd=test_dir,
+                        env=env,
+                        capture_output=True,
+                        text=True,
+                        timeout=15
+                    )
+                    out = (res.stdout.strip() + "\n" + res.stderr.strip()).strip()
+                    
+                    # JUnit XML 필수 판정 (XML 미생성 또는 파싱 실패 시 텍스트 파서 폴백 금지)
+                    if not os.path.isfile(xml_report) or os.path.getsize(xml_report) == 0:
+                        return {
+                            "runner": "pytest",
+                            "pass": False,
+                            "output": f"[JUnit XML 누락 FAIL] pytest 보고서 XML이 생성되지 않았습니다:\n{out}",
+                            "returncode": res.returncode
+                        }
+
+                    xml_pass, xml_msg = parse_pytest_xml(xml_report)
                     return {
                         "runner": "pytest",
-                        "pass": False,
-                        "output": f"[JUnit XML 누락 FAIL] pytest 보고서 XML이 생성되지 않았습니다:\n{out}",
+                        "pass": (res.returncode == 0) and bool(xml_pass),
+                        "output": out if (xml_pass and res.returncode == 0) else f"[JUnit XML 검증 실패]\n{xml_msg}\n{out}",
                         "returncode": res.returncode
                     }
-
-                xml_pass, xml_msg = parse_pytest_xml(xml_report)
-                return {
-                    "runner": "pytest",
-                    "pass": (res.returncode == 0) and bool(xml_pass),
-                    "output": out if (xml_pass and res.returncode == 0) else f"[JUnit XML 검증 실패]\n{xml_msg}\n{out}",
-                    "returncode": res.returncode
-                }
-            except subprocess.TimeoutExpired:
-                return {"runner": "pytest", "pass": False, "output": "pytest 실행 시간 초과 (15초)", "returncode": -1}
-            except Exception as e:
-                return {"runner": "pytest", "pass": False, "output": f"pytest 실행 실패: {e}", "returncode": -1}
+                except subprocess.TimeoutExpired:
+                    return {"runner": "pytest", "pass": False, "output": "pytest 실행 시간 초과 (15초)", "returncode": -1}
+                except Exception as e:
+                    return {"runner": "pytest", "pass": False, "output": f"pytest 실행 실패: {e}", "returncode": -1}
+        except OSError as e:
+            return {"runner": "pytest", "pass": False, "output": f"pytest 임시 디렉터리 격리 실패(OSError): {e}", "returncode": -1}
+        except Exception as e:
+            return {"runner": "pytest", "pass": False, "output": f"pytest 임시 환경 예외 발생: {e}", "returncode": -1}
 
     # 2. pytest 미설치 시 파이썬 내장 unittest로 실행
     try:

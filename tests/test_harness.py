@@ -526,20 +526,45 @@ class TestSynapseHarness(unittest.TestCase):
                 self.assertFalse(res["report"]["syntax_pass"], "OSError must set syntax_pass to False.")
 
     def test_smoke_import_target_dir_promoted_from_trailing(self):
-        # When target_dir already exists at the end of sys.path, smoke must promote it to sys.path[0]
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            helper_py = os.path.join(tmp_dir, "helper.py")
-            with open(helper_py, "w", encoding="utf-8") as f:
-                f.write("def val(): return 999\n")
+        # When collision_dir is prepended in PYTHONPATH and target_dir is trailing,
+        # smoke must actively promote target_dir to sys.path[0] so the genuine target helper is imported
+        with tempfile.TemporaryDirectory() as root_tmp:
+            collision_dir = os.path.join(root_tmp, "collision")
+            os.makedirs(collision_dir, exist_ok=True)
+            with open(os.path.join(collision_dir, "helper.py"), "w", encoding="utf-8") as f:
+                f.write("def val(): return 'collision_bad'\n")
 
-            main_py = os.path.join(tmp_dir, "main.py")
+            target_dir = os.path.join(root_tmp, "target")
+            os.makedirs(target_dir, exist_ok=True)
+            with open(os.path.join(target_dir, "helper.py"), "w", encoding="utf-8") as f:
+                f.write("def val(): return 'target_genuine'\n")
+
+            main_py = os.path.join(target_dir, "main.py")
             with open(main_py, "w", encoding="utf-8") as f:
-                f.write("import helper\nassert helper.val() == 999\n")
+                f.write("import helper\nassert helper.val() == 'target_genuine'\n")
 
-            # Execute smoke test and verify clean PASS
-            res = verify_file(main_py, smoke=True)
-            self.assertTrue(res["success"])
-            self.assertEqual(res["report"]["smoke_status"], "pass")
+            # Simulate collision_dir preceding target_dir in PYTHONPATH
+            env_backup = os.environ.get("PYTHONPATH", "")
+            try:
+                os.environ["PYTHONPATH"] = f"{collision_dir}{os.pathsep}{target_dir}"
+                res = verify_file(main_py, smoke=True)
+                self.assertTrue(res["success"], f"Target dir must be promoted over collision_dir in smoke: {res}")
+                self.assertEqual(res["report"]["smoke_status"], "pass")
+            finally:
+                if env_backup:
+                    os.environ["PYTHONPATH"] = env_backup
+                else:
+                    os.environ.pop("PYTHONPATH", None)
+
+    def test_unit_test_pytest_tempdir_oserror_handled(self):
+        # TemporaryDirectory creation OSError in run_unit_test pytest branch must be safely handled
+        with patch("importlib.util.find_spec", return_value=True):
+            with patch("tempfile.TemporaryDirectory", side_effect=OSError("Permission denied")):
+                sample_test = os.path.join(BASE_DIR, "tests", "sample_calc_test.py")
+                res = run_unit_test(sample_test)
+                self.assertFalse(res["pass"])
+                self.assertEqual(res["runner"], "pytest")
+                self.assertIn("임시 디렉터리 격리 실패", res["output"])
 
     def test_smoke_import_with_sibling_module(self):
         # Sibling import test: main.py imports helper.py in the same directory
