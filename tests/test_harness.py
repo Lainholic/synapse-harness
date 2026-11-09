@@ -634,6 +634,30 @@ class TestSynapseHarness(unittest.TestCase):
                     self.assertIn("[JUnit XML 누락 FAIL]", res["output"], "Preceding XML missing error must be preserved upon cleanup OSError")
                     self.assertIn("2 passed in 0.05s", res["output"], "Completed process output must be preserved upon cleanup OSError")
 
+    def test_unit_test_pytest_timeout_and_cleanup_oserror_handled(self):
+        # When subprocess timeout and TemporaryDirectory cleanup OSError occur simultaneously,
+        # the result must preserve both the cleanup failure and the preceding process timeout diagnostic
+        class FailingCleanupTempDir:
+            def __enter__(self):
+                self.name = tempfile.mkdtemp()
+                return self.name
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                import shutil
+                shutil.rmtree(self.name, ignore_errors=True)
+                raise OSError("Cleanup failed (file locked)")
+
+        with patch("importlib.util.find_spec", return_value=True):
+            with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="pytest", timeout=15)):
+                with patch("tempfile.TemporaryDirectory", side_effect=FailingCleanupTempDir):
+                    sample_test = os.path.join(BASE_DIR, "tests", "sample_calc_test.py")
+                    res = run_unit_test(sample_test)
+                    self.assertFalse(res["pass"])
+                    self.assertEqual(res["runner"], "pytest")
+                    self.assertEqual(res["returncode"], -1)
+                    self.assertIn("pytest 임시 디렉터리 격리 실패(생성/정리 OSError)", res["output"])
+                    self.assertIn("[선행 프로세스 오류]", res["output"])
+                    self.assertIn("pytest 실행 시간 초과 (15초)", res["output"])
+
     def test_parse_pytest_xml_invalid_root_and_missing_tests(self):
         # 1. Invalid root tag (e.g. <unexpected>) must be rejected
         with tempfile.TemporaryDirectory() as tmp_dir:

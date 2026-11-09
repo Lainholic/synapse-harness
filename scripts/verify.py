@@ -38,8 +38,8 @@ def find_paired_test(file_path):
     return None
 
 def parse_pytest_xml(xml_path):
-    """JUnit XML 결과 파일을 전수 파싱하여 텍스트 출력 의존성 없는 구조화된 판정을 내립니다.
-    모든 <testsuite>의 속성값과 실제 하위 태그(<testcase>, <skipped>, <failure>, <error>)의 일치성을 엄격히 검증합니다.
+    """JUnit XML의 루트와 testsuite별 tests·skipped 카운터, testcase 배치 및 실패·오류 존재 여부를 검사하고,
+    순수 통과 testcase가 하나 이상인지 판정합니다. 전체 JUnit 스키마 검증은 수행하지 않습니다.
     """
     try:
         tree = ET.parse(xml_path)
@@ -268,6 +268,7 @@ def run_unit_test(test_file, target_file=None):
     if has_pytest:
         res = None
         out = ""
+        last_process_error = None
         last_xml_diagnostic = None
         try:
             with tempfile.TemporaryDirectory() as tmp_dir:
@@ -301,11 +302,14 @@ def run_unit_test(test_file, target_file=None):
                     )
                     out = (res.stdout.strip() + "\n" + res.stderr.strip()).strip()
                 except subprocess.TimeoutExpired:
-                    return {"runner": "pytest", "pass": False, "output": "pytest 실행 시간 초과 (15초)", "returncode": -1}
+                    last_process_error = "pytest 실행 시간 초과 (15초)"
+                    return {"runner": "pytest", "pass": False, "output": last_process_error, "returncode": -1}
                 except FileNotFoundError as e:
-                    return {"runner": "pytest", "pass": False, "output": f"pytest 프로세스 시작 실패 (실행 경로 누락): {e}", "returncode": -1}
+                    last_process_error = f"pytest 프로세스 시작 실패 (실행 경로 누락): {e}"
+                    return {"runner": "pytest", "pass": False, "output": last_process_error, "returncode": -1}
                 except Exception as e:
-                    return {"runner": "pytest", "pass": False, "output": f"pytest 실행 실패: {e}", "returncode": -1}
+                    last_process_error = f"pytest 실행 실패: {e}"
+                    return {"runner": "pytest", "pass": False, "output": last_process_error, "returncode": -1}
 
                 # 2) JUnit XML 파일 상태 검사 및 파싱 구간 (XML 누락과 권한 오류 정밀 분기)
                 try:
@@ -353,6 +357,8 @@ def run_unit_test(test_file, target_file=None):
                     return {"runner": "pytest", "pass": False, "output": last_xml_diagnostic, "returncode": res.returncode}
         except OSError as e:
             err_msg = f"pytest 임시 디렉터리 격리 실패(생성/정리 OSError): {e}"
+            if last_process_error:
+                err_msg = f"{err_msg}\n[선행 프로세스 오류]\n{last_process_error}"
             if last_xml_diagnostic:
                 err_msg = f"{err_msg}\n[선행 XML 진단]\n{last_xml_diagnostic}"
             elif out:
