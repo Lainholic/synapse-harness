@@ -42,15 +42,17 @@ def parse_pytest_output(returncode, out):
     if not lines:
         return False, "[테스트 미실행] 출력이 비어 있습니다."
         
-    # pytest 공식 요약 라인 형식:
-    # 1. 일반 형식: '= 1 passed in 0.05s ='
-    # 2. -q 플래그 형식: '1 passed in 0.05s' 또는 '1 skipped in 0.05s'
-    # 3. no tests ran 형식: 'no tests ran in 0.01s'
+    # pytest 공식 요약 라인 형식 (임의 단어 허용 금지, 공식 카운터 키워드 화이트리스트 엄격 적용):
+    # 예: '= 10 passed in 0.15s =' 또는 '10 passed, 1 skipped in 0.15s'
+    kw = r"(?:passed|skipped|failed|errors?|xfailed|xpassed|warnings?)"
+    item = rf"\d+\s+{kw}"
     summary_pattern = re.compile(
-        r"^(?:=+[\s\w,]+in\s+[\d\.]+s\s*=+|\d+[\s\w,]+in\s+[\d\.]+s|no tests ran in\s+[\d\.]+s)$"
+        rf"^(?:=+\s*(?:{item}(?:,\s*)?)+\s+in\s+[\d\.]+s\s*=+"
+        rf"|(?:{item}(?:,\s*)?)+\s+in\s+[\d\.]+s"
+        rf"|no tests ran in\s+[\d\.]+s)$"
     )
     
-    # stderr 경고문 등이 뒤에 붙더라도 역순으로 진짜 pytest 요약 라인을 탐색
+    # stderr 경고문 등이 뒤에 붙더라도 역순으로 엄격한 공식 요약 라인만 탐색
     summary_line = None
     for ln in reversed(lines):
         if summary_pattern.match(ln):
@@ -60,29 +62,29 @@ def parse_pytest_output(returncode, out):
     if not summary_line:
         return False, f"[요약 누락] 유효한 pytest 실행 요약 라인을 찾을 수 없습니다:\n{out}"
         
-    # 진짜 요약 라인 내에서만 pass 및 zero/skip 검증
+    # 공식 요약 라인 내에서만 pass 및 zero/skip 검증
     m_pass = re.search(r"\b([1-9]\d*)\s+passed\b", summary_line)
     m_zero_pass = re.search(r"\b0\s+passed\b", summary_line)
-    has_no_tests = "no tests ran" in summary_line or "collected 0 items" in summary_line
+    has_no_tests = "no tests ran" in summary_line
     
     passed = (returncode == 0) and bool(m_pass) and not bool(m_zero_pass) and not has_no_tests
     return passed, out if passed else f"[테스트 미실행 또는 실패]\n{out}"
 
 def parse_unittest_output(returncode, out):
-    """unittest 출력의 마지막 'Ran N tests'와 직후 'OK/FAILED' 블록을 일체형으로 정밀 파싱합니다."""
+    """unittest 출력의 엄격한 요약 블록(^Ran N tests...$ + ^OK/FAILED...$)을 일체형으로 정밀 파싱합니다."""
     lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
     if not lines:
         return False, "[테스트 미실행] 출력이 비어 있습니다."
 
-    # unittest 정규 요약 블록: 'Ran N tests in ...s' 바로 뒤에 나오는 최종 결과 라인
-    # 진행 메시지와 섞이지 않도록 정규식으로 일체형 블록 매칭
-    summary_blocks = re.findall(
-        r"Ran\s+(\d+)\s+tests?\s+in\s+[\d\.]+s\s*\n\s*(OK(?:\s*\(.*?\))?|FAILED(?:\s*\(.*?\))?)",
-        out,
+    # 줄 시작(^)과 줄 끝($)을 엄격히 강제하여, 진행 메시지(progress: Ran...)나 가짜 OK 라인(OK: continued) 오탐 원천 차단
+    pattern = re.compile(
+        r"^Ran\s+(\d+)\s+tests?\s+in\s+[\d\.]+s\s*$\n"
+        r"^(OK(?:\s*\(skipped=\d+\))?|FAILED(?:\s*\(.*?\))?)\s*$",
         re.MULTILINE
     )
+    summary_blocks = pattern.findall(out)
     if not summary_blocks:
-        return False, f"[요약 누락] 유효한 unittest 실행 요약 블록(Ran N tests... + OK/FAILED)이 없습니다:\n{out}"
+        return False, f"[요약 누락] 유효한 unittest 실행 요약 블록(^Ran N tests...$ + ^OK/FAILED$)이 없습니다:\n{out}"
         
     # 마지막 요약 블록을 신뢰
     ran_count_str, result_status = summary_blocks[-1]

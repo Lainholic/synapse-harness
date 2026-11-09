@@ -147,6 +147,12 @@ class TestSynapseHarness(unittest.TestCase):
         passed, out = parse_pytest_output(0, raw_output)
         self.assertFalse(passed, "Trailing warning after skipped summary must not cause false PASS.")
 
+    def test_pytest_parse_fake_warning_with_summary_pattern_fails(self):
+        # Counterexample: fake summary line with arbitrary text (UserWarning previous run had 1 passed in 0.05s)
+        raw_output = "1 skipped in 0.05s\n1 UserWarning previous run had 1 passed in 0.05s"
+        passed, out = parse_pytest_output(0, raw_output)
+        self.assertFalse(passed, "Arbitrary non-pytest keyword line must not be recognized as summary.")
+
     def test_unittest_parse_all_skipped_fails(self):
         # Directly test parse_unittest_output when all tests are skipped
         raw_output = "test_foo (tests.test_bar) ... skipped 'reason'\n\nRan 2 tests in 0.001s\n\nOK (skipped=2)"
@@ -169,6 +175,12 @@ class TestSynapseHarness(unittest.TestCase):
         raw_output = "progress: Ran 2 tests in 0.01s\ns\n-----\nRan 1 test in 0.001s\n\nOK (skipped=1)"
         passed, out = parse_unittest_output(0, raw_output)
         self.assertFalse(passed, "Final block with all skipped must fail even if earlier line had higher test count.")
+
+    def test_unittest_parse_prefixed_ran_mixed_blocks_fails(self):
+        # Counterexample: earlier valid all-skipped block followed by prefixed progress and arbitrary OK line
+        raw_output = "Ran 1 test in 0.001s\n\nOK (skipped=1)\nprogress: Ran 2 tests in 0.01s\nOK: progress continued"
+        passed, out = parse_unittest_output(0, raw_output)
+        self.assertFalse(passed, "Prefixed progress lines and arbitrary OK lines must not be parsed as unittest summary block.")
 
     def test_sanitizer_scan(self):
         sample_text = f"{'Gemini'} {'1.5'} {'Pro'} and {'Claude'} {'3.5'} {'Sonnet'}."
