@@ -268,6 +268,7 @@ def run_unit_test(test_file, target_file=None):
     if has_pytest:
         res = None
         out = ""
+        last_xml_diagnostic = None
         try:
             with tempfile.TemporaryDirectory() as tmp_dir:
                 xml_report = os.path.join(tmp_dir, "junit_report.xml")
@@ -310,42 +311,52 @@ def run_unit_test(test_file, target_file=None):
                 try:
                     st = os.stat(xml_report)
                     if st.st_size == 0:
+                        last_xml_diagnostic = f"[JUnit XML 누락 FAIL] pytest 보고서 XML 파일 크기가 0입니다:\n{out}"
                         return {
                             "runner": "pytest",
                             "pass": False,
-                            "output": f"[JUnit XML 누락 FAIL] pytest 보고서 XML 파일 크기가 0입니다:\n{out}",
+                            "output": last_xml_diagnostic,
                             "returncode": res.returncode
                         }
 
                     xml_pass, xml_msg = parse_pytest_xml(xml_report)
+                    final_pass = (res.returncode == 0) and bool(xml_pass)
+                    final_out = out if (xml_pass and res.returncode == 0) else f"[JUnit XML 검증 실패]\n{xml_msg}\n{out}"
+                    if not final_pass:
+                        last_xml_diagnostic = final_out
                     return {
                         "runner": "pytest",
-                        "pass": (res.returncode == 0) and bool(xml_pass),
-                        "output": out if (xml_pass and res.returncode == 0) else f"[JUnit XML 검증 실패]\n{xml_msg}\n{out}",
+                        "pass": final_pass,
+                        "output": final_out,
                         "returncode": res.returncode
                     }
                 except FileNotFoundError:
                     # XML 파일 부재 또는 stat 후 파싱 시점 소실(TOCTOU)은 일관되게 XML 누락으로 분류
+                    last_xml_diagnostic = f"[JUnit XML 누락 FAIL] pytest 보고서 XML이 존재하지 않습니다:\n{out}"
                     return {
                         "runner": "pytest",
                         "pass": False,
-                        "output": f"[JUnit XML 누락 FAIL] pytest 보고서 XML이 존재하지 않습니다:\n{out}",
+                        "output": last_xml_diagnostic,
                         "returncode": res.returncode
                     }
                 except OSError as e:
                     # XML 파일 접근/읽기 오류 (권한 부족 등) 발생 시 종료코드와 프로세스 출력을 보존하여 보고
+                    last_xml_diagnostic = f"[JUnit XML 접근 오류 (OSError)]\n{e}\n{out}"
                     return {
                         "runner": "pytest",
                         "pass": False,
-                        "output": f"[JUnit XML 접근 오류 (OSError)]\n{e}\n{out}",
+                        "output": last_xml_diagnostic,
                         "returncode": res.returncode
                     }
                 except Exception as e:
-                    return {"runner": "pytest", "pass": False, "output": f"pytest XML 검증 예외 발생: {e}", "returncode": res.returncode}
+                    last_xml_diagnostic = f"pytest XML 검증 예외 발생: {e}"
+                    return {"runner": "pytest", "pass": False, "output": last_xml_diagnostic, "returncode": res.returncode}
         except OSError as e:
             err_msg = f"pytest 임시 디렉터리 격리 실패(생성/정리 OSError): {e}"
-            if out:
-                err_msg = f"{err_msg}\n{out}"
+            if last_xml_diagnostic:
+                err_msg = f"{err_msg}\n[선행 XML 진단]\n{last_xml_diagnostic}"
+            elif out:
+                err_msg = f"{err_msg}\n[프로세스 출력]\n{out}"
             return {"runner": "pytest", "pass": False, "output": err_msg, "returncode": res.returncode if res is not None else -1}
         except Exception as e:
             return {"runner": "pytest", "pass": False, "output": f"pytest 임시 환경 예외 발생: {e}", "returncode": res.returncode if res is not None else -1}

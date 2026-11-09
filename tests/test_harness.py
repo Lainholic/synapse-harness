@@ -536,12 +536,13 @@ class TestSynapseHarness(unittest.TestCase):
                 self.assertIn("os.path.normcase(os.path.realpath(p))", runner_script)
                 self.assertIn("sys.path = [p for p in sys.path if _norm(p) not in blocked", runner_script)
                 
-                # Assert execution order: sys.path.insert for target_dir must precede pytest.main
-                idx_insert = runner_script.find("sys.path.insert(0,")
+                # Assert execution order: sys.path.insert for TARGET DIR must specifically precede pytest.main
+                target_dir_clean = os.path.dirname(os.path.abspath(sample_target))
+                idx_target_insert = runner_script.find(f"sys.path.insert(0, {repr(target_dir_clean)})")
                 idx_main = runner_script.find("pytest.main")
-                self.assertGreater(idx_insert, -1, "Target dir insertion must be present in runner_code")
+                self.assertGreater(idx_target_insert, -1, "Target dir insertion statement must be specifically present in runner_code")
                 self.assertGreater(idx_main, -1, "pytest.main must be present in runner_code")
-                self.assertLess(idx_insert, idx_main, "sys.path.insert for target_dir must strictly precede pytest.main")
+                self.assertLess(idx_target_insert, idx_main, "Explicit sys.path.insert for target_dir must strictly precede pytest.main")
 
     def test_verify_compile_tempdir_oserror_handled(self):
         # OSError during TemporaryDirectory creation in compile step must be caught and reported as structured JSON
@@ -629,6 +630,8 @@ class TestSynapseHarness(unittest.TestCase):
                     self.assertEqual(res["runner"], "pytest")
                     self.assertEqual(res["returncode"], 0, "Completed process returncode must be preserved upon cleanup OSError")
                     self.assertIn("pytest 임시 디렉터리 격리 실패(생성/정리 OSError)", res["output"])
+                    self.assertIn("[선행 XML 진단]", res["output"], "Preceding XML diagnostic must be preserved upon cleanup OSError")
+                    self.assertIn("[JUnit XML 누락 FAIL]", res["output"], "Preceding XML missing error must be preserved upon cleanup OSError")
                     self.assertIn("2 passed in 0.05s", res["output"], "Completed process output must be preserved upon cleanup OSError")
 
     def test_parse_pytest_xml_invalid_root_and_missing_tests(self):
