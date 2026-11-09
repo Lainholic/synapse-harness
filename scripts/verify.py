@@ -424,20 +424,25 @@ def verify_file(file_path, run_tests=False, smoke=False, strict=False):
             return {"success": False, "report": report}
 
         # 자체 바이트코드 잔여 방지를 위해 임시 디렉터리에서 컴파일 수행
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            temp_cfile = os.path.join(tmp_dir, "temp_check.pyc")
-            try:
-                py_compile.compile(file_path, cfile=temp_cfile, doraise=True)
-                report["syntax_pass"] = True
-                report["details"].append("py_compile 구문 검사 PASS (격리 컴파일 완료)")
-            except py_compile.PyCompileError as e:
-                report["syntax_pass"] = False
-                report["details"].append(f"구문 오류(SyntaxError): {str(e)}")
-                return {"success": False, "report": report}
-            except Exception as e:
-                report["syntax_pass"] = False
-                report["details"].append(f"컴파일 환경 예외 발생: {str(e)}")
-                return {"success": False, "report": report}
+        try:
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                temp_cfile = os.path.join(tmp_dir, "temp_check.pyc")
+                try:
+                    py_compile.compile(file_path, cfile=temp_cfile, doraise=True)
+                    report["syntax_pass"] = True
+                    report["details"].append("py_compile 구문 검사 PASS (격리 컴파일 완료)")
+                except py_compile.PyCompileError as e:
+                    report["syntax_pass"] = False
+                    report["details"].append(f"구문 오류(SyntaxError): {str(e)}")
+                    return {"success": False, "report": report}
+        except OSError as e:
+            report["syntax_pass"] = False
+            report["details"].append(f"컴파일 임시 디렉터리 격리 실패(OSError): {str(e)}")
+            return {"success": False, "report": report}
+        except Exception as e:
+            report["syntax_pass"] = False
+            report["details"].append(f"컴파일 환경 예외 발생: {str(e)}")
+            return {"success": False, "report": report}
 
         # ruff 린터 정적 분석 (--no-fix 명시하여 검수 시 원본 불변 보장)
         try:
@@ -538,21 +543,31 @@ def verify_file(file_path, run_tests=False, smoke=False, strict=False):
         def reject_constant(c):
             raise ValueError(f"비표준 JSON 상수 '{c}' 검출 (RFC 8259 위반)")
 
+        # 1) 파일 읽기 및 UTF-8 인코딩 무결성 검증
         try:
             with open(file_path, "r", encoding="utf-8") as f:
-                json.load(f, parse_constant=reject_constant)
+                content = f.read()
             report["encoding_pass"] = True
-            report["syntax_pass"] = True
-            report["linter_status"] = "pass"
-            report["details"].append("JSON 구문 파싱 PASS (표준 규격 준수)")
         except UnicodeDecodeError as e:
             report["encoding_pass"] = False
             report["syntax_pass"] = False
             report["linter_status"] = "failed"
             report["details"].append(f"UTF-8 디코딩 오류: {str(e)}")
             return {"success": False, "report": report}
+        except OSError as e:
+            report["encoding_pass"] = False
+            report["syntax_pass"] = False
+            report["linter_status"] = "failed"
+            report["details"].append(f"JSON 파일 읽기 접근 오류(OSError): {str(e)}")
+            return {"success": False, "report": report}
+
+        # 2) JSON 구문 표준 파싱 검증
+        try:
+            json.loads(content, parse_constant=reject_constant)
+            report["syntax_pass"] = True
+            report["linter_status"] = "pass"
+            report["details"].append("JSON 구문 파싱 PASS (표준 규격 준수)")
         except Exception as e:
-            report["encoding_pass"] = True
             report["syntax_pass"] = False
             report["linter_status"] = "failed"
             report["details"].append(f"JSON 파싱 실패: {str(e)}")

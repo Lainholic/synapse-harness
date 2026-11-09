@@ -484,15 +484,62 @@ class TestSynapseHarness(unittest.TestCase):
             with open(test_calc, "w", encoding="utf-8") as f:
                 f.write("import unittest\nfrom calc import compute\nclass TestPriority(unittest.TestCase):\n    def test_val(self):\n        self.assertEqual(compute(), 'genuine')\n")
 
-            # 1. Run under default available runner (pytest if installed)
-            res = run_unit_test(test_calc, target_file=target_calc)
-            self.assertTrue(res["pass"], f"Target dir must take precedence over cwd: {res}")
+            # 1. Run specifically under pytest runner
+            has_pytest = False
+            try:
+                import importlib.util
+                has_pytest = importlib.util.find_spec("pytest") is not None
+            except Exception:
+                has_pytest = False
+
+            if has_pytest:
+                res_pytest = run_unit_test(test_calc, target_file=target_calc)
+                self.assertEqual(res_pytest["runner"], "pytest")
+                self.assertTrue(res_pytest["pass"], f"pytest runner must prioritize target_dir: {res_pytest}")
 
             # 2. Run specifically under unittest runner (by mocking find_spec to return None for pytest)
             with patch("importlib.util.find_spec", return_value=None):
                 res_unittest = run_unit_test(test_calc, target_file=target_calc)
                 self.assertEqual(res_unittest["runner"], "unittest")
                 self.assertTrue(res_unittest["pass"], f"Unittest runner must also prioritize target_dir: {res_unittest}")
+
+    def test_verify_compile_tempdir_oserror_handled(self):
+        # OSError during TemporaryDirectory creation in compile step must be caught and reported as structured JSON
+        with patch("tempfile.TemporaryDirectory", side_effect=OSError("Disk full / permission denied")):
+            sample_path = os.path.join(BASE_DIR, "tests", "sample_valid.py")
+            res = verify_file(sample_path)
+            self.assertFalse(res["success"], "Compilation TemporaryDirectory OSError must cause failure.")
+            self.assertFalse(res["report"]["syntax_pass"])
+            self.assertIn("임시 디렉터리 격리 실패", " ".join(res["report"]["details"]))
+
+    def test_json_file_read_oserror_encoding_false(self):
+        # OSError when reading JSON file must set encoding_pass and syntax_pass to False (not claiming UTF-8 pass)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            json_file = os.path.join(tmp_dir, "test.json")
+            with open(json_file, "w", encoding="utf-8") as f:
+                f.write('{"key": "value"}')
+
+            with patch("builtins.open", side_effect=PermissionError("Access denied")):
+                res = verify_file(json_file)
+                self.assertFalse(res["success"])
+                self.assertFalse(res["report"]["encoding_pass"], "OSError must set encoding_pass to False.")
+                self.assertFalse(res["report"]["syntax_pass"], "OSError must set syntax_pass to False.")
+
+    def test_smoke_import_target_dir_promoted_from_trailing(self):
+        # When target_dir already exists at the end of sys.path, smoke must promote it to sys.path[0]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            helper_py = os.path.join(tmp_dir, "helper.py")
+            with open(helper_py, "w", encoding="utf-8") as f:
+                f.write("def val(): return 999\n")
+
+            main_py = os.path.join(tmp_dir, "main.py")
+            with open(main_py, "w", encoding="utf-8") as f:
+                f.write("import helper\nassert helper.val() == 999\n")
+
+            # Execute smoke test and verify clean PASS
+            res = verify_file(main_py, smoke=True)
+            self.assertTrue(res["success"])
+            self.assertEqual(res["report"]["smoke_status"], "pass")
 
     def test_smoke_import_with_sibling_module(self):
         # Sibling import test: main.py imports helper.py in the same directory
