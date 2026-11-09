@@ -165,7 +165,7 @@ class TestSynapseHarness(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             xml_pass_file = os.path.join(tmp_dir, "pass.xml")
             with open(xml_pass_file, "w", encoding="utf-8") as f:
-                f.write('<?xml version="1.0" encoding="utf-8"?><testsuite name="pytest" errors="0" failures="0" skipped="0" tests="5"></testsuite>')
+                f.write('<?xml version="1.0" encoding="utf-8"?><testsuite name="pytest" errors="0" failures="0" skipped="0" tests="5"><testcase name="t1"/></testsuite>')
             passed, msg = parse_pytest_xml(xml_pass_file)
             self.assertTrue(passed, msg)
 
@@ -175,17 +175,76 @@ class TestSynapseHarness(unittest.TestCase):
             passed_f, msg_f = parse_pytest_xml(xml_fail_file)
             self.assertFalse(passed_f, msg_f)
 
+    def test_pytest_xml_multi_suites_aggregation(self):
+        # Multiple testsuites aggregation: if second suite fails, whole result must fail
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            xml_file = os.path.join(tmp_dir, "multi.xml")
+            with open(xml_file, "w", encoding="utf-8") as f:
+                f.write('<?xml version="1.0" encoding="utf-8"?><testsuites>'
+                        '<testsuite name="s1" errors="0" failures="0" skipped="0" tests="2"/>'
+                        '<testsuite name="s2" errors="0" failures="1" skipped="0" tests="3"/>'
+                        '</testsuites>')
+            passed, msg = parse_pytest_xml(xml_file)
+            self.assertFalse(passed, "Multi-suite with any failure must fail.")
+
+    def test_pytest_xml_negative_counter_fails(self):
+        # Negative counter values must be rejected
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            xml_file = os.path.join(tmp_dir, "negative.xml")
+            with open(xml_file, "w", encoding="utf-8") as f:
+                f.write('<testsuite name="pytest" errors="0" failures="0" skipped="0" tests="-1"/>')
+            passed, msg = parse_pytest_xml(xml_file)
+            self.assertFalse(passed, "Negative tests counter must fail.")
+
+    def test_pytest_xml_direct_failure_tag_detected(self):
+        # Counter attributes lie (failures=0), but direct <failure> tag exists in XML
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            xml_file = os.path.join(tmp_dir, "stealth_fail.xml")
+            with open(xml_file, "w", encoding="utf-8") as f:
+                f.write('<testsuite name="pytest" errors="0" failures="0" skipped="0" tests="2">'
+                        '<testcase name="c1"><failure message="error">crash</failure></testcase>'
+                        '</testsuite>')
+            passed, msg = parse_pytest_xml(xml_file)
+            self.assertFalse(passed, "Stealth failure tag must be detected and rejected.")
+
+    def test_pytest_xml_all_skipped_fails(self):
+        # All tests skipped (pure passed count is 0) must fail
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            xml_file = os.path.join(tmp_dir, "all_skipped.xml")
+            with open(xml_file, "w", encoding="utf-8") as f:
+                f.write('<testsuite name="pytest" errors="0" failures="0" skipped="2" tests="2"/>')
+            passed, msg = parse_pytest_xml(xml_file)
+            self.assertFalse(passed, "All skipped in XML must fail.")
+
     def test_unittest_parse_clean_ok_passes(self):
         # Positive test: clean unittest OK output
         raw_output = "Ran 1 test in 0.001s\n\nOK"
         passed, out = parse_unittest_output(0, raw_output)
         self.assertTrue(passed, f"Clean OK should pass: {out}")
 
-    def test_unittest_parse_expected_failures_passes(self):
-        # Positive test: OK with expected failures should succeed
+    def test_unittest_parse_passed_with_expected_failures(self):
+        # Positive test: OK with 1 expected failure out of 2 tests (1 pure passed) should succeed
         raw_output = "Ran 2 tests in 0.001s\n\nOK (expected failures=1)"
         passed, out = parse_unittest_output(0, raw_output)
-        self.assertTrue(passed, f"OK with expected failures should pass: {out}")
+        self.assertTrue(passed, f"OK with 1 pure pass and 1 expected failure should pass: {out}")
+
+    def test_unittest_parse_all_expected_failures_fails(self):
+        # Negative test: Ran 1 test, expected failures=1 (pure passed = 0) must fail
+        raw_output = "Ran 1 test in 0.001s\n\nOK (expected failures=1)"
+        passed, out = parse_unittest_output(0, raw_output)
+        self.assertFalse(passed, f"OK with 0 pure passed tests must fail: {out}")
+
+    def test_unittest_parse_contradictory_ok_with_failures_fails(self):
+        # Negative test: OK (failures=1) counter contradiction must fail
+        raw_output = "Ran 1 test in 0.001s\n\nOK (failures=1)"
+        passed, out = parse_unittest_output(0, raw_output)
+        self.assertFalse(passed, f"Contradictory OK (failures=1) must fail: {out}")
+
+    def test_unittest_parse_all_skipped_with_zero_expected_fails(self):
+        # Counterexample: OK (skipped=1, expected failures=0) must fail
+        raw_output = "Ran 1 test in 0.001s\n\nOK (skipped=1, expected failures=0)"
+        passed, out = parse_unittest_output(0, raw_output)
+        self.assertFalse(passed, f"All skipped with 0 expected failures must fail: {out}")
 
     def test_unittest_parse_all_skipped_fails(self):
         # Directly test parse_unittest_output when all tests are skipped
@@ -215,6 +274,43 @@ class TestSynapseHarness(unittest.TestCase):
         raw_output = "Ran 1 test in 0.001s\n\nOK (skipped=1)\nprogress: Ran 2 tests in 0.01s\nOK: progress continued"
         passed, out = parse_unittest_output(0, raw_output)
         self.assertFalse(passed, "Prefixed progress lines and arbitrary OK lines must not be parsed as unittest summary block.")
+
+    def test_json_reject_nan_infinity(self):
+        # RFC 8259 strict compliance: NaN and Infinity must fail
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            nan_file = os.path.join(tmp_dir, "nan.json")
+            with open(nan_file, "w", encoding="utf-8") as f:
+                f.write('{"val": NaN}')
+            res = verify_file(nan_file)
+            self.assertFalse(res["success"], "JSON with NaN must fail.")
+
+            inf_file = os.path.join(tmp_dir, "inf.json")
+            with open(inf_file, "w", encoding="utf-8") as f:
+                f.write('{"val": Infinity}')
+            res2 = verify_file(inf_file)
+            self.assertFalse(res2["success"], "JSON with Infinity must fail.")
+
+    def test_markdown_syntax_pass_is_none(self):
+        # Markdown and text files must have syntax_pass as None (unsupported linter), not True
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            md_file = os.path.join(tmp_dir, "sample.md")
+            with open(md_file, "w", encoding="utf-8") as f:
+                f.write("# Sample Markdown\n\nContent here.")
+            res = verify_file(md_file)
+            self.assertTrue(res["success"])
+            self.assertIsNone(res["report"]["syntax_pass"], "Markdown syntax_pass should be None (not falsely claiming AST parsing).")
+            self.assertTrue(res["report"]["encoding_pass"], "Encoding pass must be True.")
+
+    def test_external_test_file_legacy_model_scanned(self):
+        # External project's test_*.py must NOT be exempt from legacy model scan
+        legacy_name = "gpt-4o"
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ext_test_file = os.path.join(tmp_dir, "test_external.py")
+            with open(ext_test_file, "w", encoding="utf-8") as f:
+                f.write(f'# External test file\nMODEL_NAME = "{legacy_name}"\n')
+            res = verify_file(ext_test_file)
+            self.assertFalse(res["success"], "External test file with legacy model must fail.")
+            self.assertEqual(res["report"]["model_scan_status"], "failed")
 
     def test_sanitizer_scan(self):
         sample_text = f"{'Gemini'} {'1.5'} {'Pro'} and {'Claude'} {'3.5'} {'Sonnet'}."

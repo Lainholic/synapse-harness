@@ -38,29 +38,57 @@ def find_paired_test(file_path):
     return None
 
 def parse_pytest_xml(xml_path):
-    """JUnit XML 결과 파일을 직접 파싱하여 텍스트 출력 의존성 없는 구조화된 판정을 내립니다."""
+    """JUnit XML 결과 파일을 전수 파싱하여 텍스트 출력 의존성 없는 구조화된 판정을 내립니다.
+    모든 <testsuite> 요소를 순회 집계하고, 태그 및 카운터 일관성을 엄격히 검증합니다.
+    """
     try:
         tree = ET.parse(xml_path)
         root = tree.getroot()
-        # root can be <testsuites> or <testsuite>
-        suite = root if root.tag == "testsuite" else root.find("testsuite")
-        if suite is None:
-            suite = root
         
-        tests = int(suite.attrib.get("tests", 0))
-        failures = int(suite.attrib.get("failures", 0))
-        errors = int(suite.attrib.get("errors", 0))
-        skipped = int(suite.attrib.get("skipped", 0))
+        suites = root.findall(".//testsuite")
+        if not suites and root.tag == "testsuite":
+            suites = [root]
+            
+        if not suites:
+            return False, "JUnit XML 내에서 유효한 <testsuite> 요소를 찾을 수 없습니다."
+            
+        total_tests = 0
+        total_failures = 0
+        total_errors = 0
+        total_skipped = 0
         
-        if tests == 0 or tests == skipped:
-            return False, f"실행된 유효 테스트가 없거나 전부 건너뛰어졌습니다 (tests={tests}, skipped={skipped})"
+        for s in suites:
+            try:
+                t = int(s.attrib.get("tests", 0))
+                f = int(s.attrib.get("failures", 0))
+                e = int(s.attrib.get("errors", 0))
+                sk = int(s.attrib.get("skipped", 0))
+            except ValueError:
+                return False, f"속성 카운터 정수 변환 실패: {s.attrib}"
+                
+            if t < 0 or f < 0 or e < 0 or sk < 0:
+                return False, f"음수 카운터 속성 검출: {s.attrib}"
+                
+            total_tests += t
+            total_failures += f
+            total_errors += e
+            total_skipped += sk
+
+        # XML 내 실제 <failure>, <error> 태그 직접 전수 카운트
+        direct_failures = len(root.findall(".//failure"))
+        direct_errors = len(root.findall(".//error"))
+        
+        if total_failures > 0 or total_errors > 0 or direct_failures > 0 or direct_errors > 0:
+            return False, f"테스트 실패 또는 오류 발생 (failures={total_failures}, errors={total_errors}, direct_fail={direct_failures}, direct_err={direct_errors})"
+
+        # 유효 순수 성공 테스트 수 검증 (xfail/skip/0 tests 방어)
+        passed_count = total_tests - total_failures - total_errors - total_skipped
+        if total_tests == 0 or passed_count <= 0:
+            return False, f"실행된 유효 성공 테스트가 0개입니다 (tests={total_tests}, skipped={total_skipped}, passed={passed_count})"
             
-        if failures > 0 or errors > 0:
-            return False, f"테스트 실패 또는 오류 발생 (failures={failures}, errors={errors})"
-            
-        return True, f"JUnit XML 구조 판정 성공 (tests={tests}, skipped={skipped}, failures={failures}, errors={errors})"
+        return True, f"JUnit XML 구조 판정 성공 (tests={total_tests}, passed={passed_count}, skipped={total_skipped}, failures={total_failures}, errors={total_errors})"
     except Exception as e:
-        return None, f"XML 파싱 실패: {e}"
+        return False, f"XML 파싱 또는 검증 예외: {e}"
 
 def parse_pytest_output(returncode, out):
     """pytest 터미널 출력에서 공식 요약 라인(summary line)만을 역순 탐색하여 엄격히 판정합니다."""
@@ -99,44 +127,71 @@ def parse_pytest_output(returncode, out):
     return passed, out if passed else f"[테스트 미실행 또는 실패]\n{out}"
 
 def parse_unittest_output(returncode, out):
-    """unittest 출력의 엄격한 요약 블록을 파싱하여 OK (expected failures 등)를 포함한 결과를 정밀 검증합니다."""
+    """unittest 출력의 엄격한 요약 블록을 파싱하여 상태 및 카운터 모순을 정밀 검증합니다."""
     lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
     if not lines:
         return False, "[테스트 미실행] 출력이 비어 있습니다."
 
-    # 줄 시작(^)과 줄 끝($)을 엄격히 강제하며, OK 뒤에 괄호로 오는 expected failures, skipped 등 모든 공식 상태를 포괄
+    # 줄 시작(^)과 줄 끝($)을 엄격히 강제하며 요약 블록 파싱
     pattern = re.compile(
         r"^Ran\s+(\d+)\s+tests?\s+in\s+[\d\.]+s\s*$\n"
-        r"^(OK(?:\s*\(.*?\))?|FAILED(?:\s*\(.*?\))?)\s*$",
+        r"^(OK(?:\s*\((?P<detail>[a-zA-Z0-9_=\s,]+)\))?|FAILED(?:\s*\(.*?\))?)\s*$",
         re.MULTILINE
     )
-    summary_blocks = pattern.findall(out)
-    if not summary_blocks:
+    summary_blocks = pattern.finditer(out)
+    matches = list(summary_blocks)
+    if not matches:
         return False, f"[요약 누락] 유효한 unittest 실행 요약 블록(^Ran N tests...$ + ^OK/FAILED$)이 없습니다:\n{out}"
         
-    ran_count_str, result_status = summary_blocks[-1]
-    ran_count = int(ran_count_str)
+    last_match = matches[-1]
+    ran_count = int(last_match.group(1))
+    full_status = last_match.group(2)
+    detail = last_match.group("detail") or ""
     
     if ran_count == 0:
         return False, f"실행된 테스트 케이스가 0개입니다:\n{out}"
-        
-    # 전부 skipped 방어: skipped=N 에서 N == ran_count 이고 다른 유효 실행(expected failures 등)이 없는 경우
-    m_skip = re.search(r"skipped=(\d+)", result_status)
-    m_expected = re.search(r"expected failures=(\d+)", result_status)
-    if m_skip and int(m_skip.group(1)) == ran_count and not m_expected:
-        return False, f"실행된 유효 테스트가 모두 건너뛰어졌습니다 (전부 skipped={ran_count}):\n{out}"
 
-    passed = (returncode == 0) and result_status.startswith("OK")
-    return passed, out if passed else f"[테스트 실패]\n{out}"
+    if not full_status.startswith("OK"):
+        return False, f"[테스트 실패]\n{out}"
+
+    # OK 괄호 상세 내용 검증
+    if detail:
+        # expected failures, skipped, unexpected successes 제거 후 불법/모순 키워드(단독 failures, errors 등) 검사
+        sanitized_detail = re.sub(r"\bexpected failures=\d+\b", "", detail)
+        sanitized_detail = re.sub(r"\bskipped=\d+\b", "", sanitized_detail)
+        sanitized_detail = re.sub(r"\bunexpected successes=\d+\b", "", sanitized_detail)
+        
+        if re.search(r"\b(?:failures|errors)\b", sanitized_detail):
+            return False, f"[모순 상태 검출] OK 상태 괄호 내에 비정상 실패 키워드가 포함되어 있습니다: {detail}"
+
+        m_skip = re.search(r"\bskipped=(\d+)\b", detail)
+        m_expected = re.search(r"\bexpected failures=(\d+)\b", detail)
+        m_unexpected = re.search(r"\bunexpected successes=(\d+)\b", detail)
+
+        skipped_count = int(m_skip.group(1)) if m_skip else 0
+        expected_count = int(m_expected.group(1)) if m_expected else 0
+        unexpected_count = int(m_unexpected.group(1)) if m_unexpected else 0
+
+        if unexpected_count > 0:
+            return False, f"예상치 못한 성공(unexpected successes={unexpected_count})이 발생하였습니다:\n{out}"
+
+        # 유효 순수 성공 테스트 검증 (전부 skip 또는 expected failures만 있는 경우 거부)
+        pure_passed = ran_count - skipped_count - expected_count
+        if pure_passed <= 0:
+            return False, f"실행된 테스트 중 순수 통과(passed)한 테스트가 0개입니다 (ran={ran_count}, skipped={skipped_count}, expected={expected_count}):\n{out}"
+
+    passed = (returncode == 0)
+    return passed, out if passed else f"[테스트 실패 (종료코드={returncode})]\n{out}"
 
 def run_unit_test(test_file):
-    """동일한 Python 인터프리터의 pytest(JUnit XML 우선) 또는 unittest로 테스트 파일을 격리 실행합니다."""
+    """동일한 Python 인터프리터의 pytest(JUnit XML 필수) 또는 unittest로 테스트 파일을 격리 실행합니다."""
     test_dir = os.path.dirname(os.path.abspath(test_file))
     test_name = os.path.basename(test_file)
     env = os.environ.copy()
     existing_pythonpath = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = f"{test_dir}{os.pathsep}{existing_pythonpath}"
     env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env["PYTHONSAFEPATH"] = "1"  # 현재 디렉터리의 모듈 하이재킹 차단
 
     # 1. pytest 가용 여부 사전 검사
     has_pytest = False
@@ -146,12 +201,16 @@ def run_unit_test(test_file):
     except Exception:
         has_pytest = False
 
+    # Python 3.11+ 격리 플래그 (-P: sys.path[0]에 현재 디렉터리 삽입 방지)
+    safe_path_args = ["-P"] if sys.version_info >= (3, 11) else []
+
     if has_pytest:
         with tempfile.TemporaryDirectory() as tmp_dir:
             xml_report = os.path.join(tmp_dir, "junit_report.xml")
             try:
+                cmd = [sys.executable] + safe_path_args + ["-m", "pytest", "-q", f"--junitxml={xml_report}", test_name]
                 res = subprocess.run(
-                    [sys.executable, "-m", "pytest", "-q", f"--junitxml={xml_report}", test_name],
+                    cmd,
                     cwd=test_dir,
                     env=env,
                     capture_output=True,
@@ -160,23 +219,20 @@ def run_unit_test(test_file):
                 )
                 out = (res.stdout.strip() + "\n" + res.stderr.strip()).strip()
                 
-                # 1순위: 구조화된 JUnit XML로 기계적 판정 (터미널 텍스트 위장 원천 차단)
-                if os.path.isfile(xml_report):
-                    xml_pass, xml_msg = parse_pytest_xml(xml_report)
-                    if xml_pass is not None:
-                        return {
-                            "runner": "pytest",
-                            "pass": (res.returncode == 0) and xml_pass,
-                            "output": out if xml_pass else f"[JUnit XML 검증 실패]\n{xml_msg}\n{out}",
-                            "returncode": res.returncode
-                        }
+                # JUnit XML 필수 판정 (XML 미생성 또는 파싱 실패 시 텍스트 파서 폴백 금지)
+                if not os.path.isfile(xml_report) or os.path.getsize(xml_report) == 0:
+                    return {
+                        "runner": "pytest",
+                        "pass": False,
+                        "output": f"[JUnit XML 누락 FAIL] pytest 보고서 XML이 생성되지 않았습니다:\n{out}",
+                        "returncode": res.returncode
+                    }
 
-                # 2순위 (XML 미생성 시): 터미널 출력 정밀 요약 라인 파싱
-                passed, formatted_output = parse_pytest_output(res.returncode, out)
+                xml_pass, xml_msg = parse_pytest_xml(xml_report)
                 return {
                     "runner": "pytest",
-                    "pass": passed,
-                    "output": formatted_output,
+                    "pass": (res.returncode == 0) and bool(xml_pass),
+                    "output": out if (xml_pass and res.returncode == 0) else f"[JUnit XML 검증 실패]\n{xml_msg}\n{out}",
                     "returncode": res.returncode
                 }
             except subprocess.TimeoutExpired:
@@ -186,8 +242,9 @@ def run_unit_test(test_file):
 
     # 2. pytest 미설치 시 파이썬 내장 unittest로 실행
     try:
+        cmd = [sys.executable] + safe_path_args + ["-m", "unittest", test_name]
         res = subprocess.run(
-            [sys.executable, "-m", "unittest", test_name],
+            cmd,
             cwd=test_dir,
             env=env,
             capture_output=True,
@@ -394,15 +451,18 @@ def verify_file(file_path, run_tests=False, smoke=False, strict=False):
                 overall_success = False
                 report["details"].append("[단위 테스트 FAIL] 대응하는 단위 테스트 파일(test_*.py)을 찾지 못하여 테스트를 수행할 수 없습니다.")
 
-    # 2. JSON 파싱 검사 (문법 파싱)
+    # 2. JSON 파싱 검사 (엄격한 RFC 8259 표준 준수: 비표준 상수 NaN, Infinity 거부)
     elif ext == ".json":
+        def reject_constant(c):
+            raise ValueError(f"비표준 JSON 상수 '{c}' 검출 (RFC 8259 위반)")
+
         try:
             with open(file_path, "r", encoding="utf-8") as f:
-                json.load(f)
+                json.load(f, parse_constant=reject_constant)
             report["encoding_pass"] = True
             report["syntax_pass"] = True
             report["linter_status"] = "pass"
-            report["details"].append("JSON 구문 파싱 PASS")
+            report["details"].append("JSON 구문 파싱 PASS (표준 규격 준수)")
         except UnicodeDecodeError as e:
             report["encoding_pass"] = False
             report["syntax_pass"] = False
@@ -422,9 +482,9 @@ def verify_file(file_path, run_tests=False, smoke=False, strict=False):
             with open(file_path, "r", encoding="utf-8") as f:
                 f.read()
             report["encoding_pass"] = True
-            report["syntax_pass"] = True
+            report["syntax_pass"] = None  # 언어별 전용 AST 구문 분석기는 미실행 (not_checked)
             report["linter_status"] = "unsupported"
-            report["details"].append("UTF-8 텍스트 인코딩 및 읽기 무결성 PASS")
+            report["details"].append("UTF-8 텍스트 인코딩 및 읽기 무결성 PASS (언어별 전용 AST 구문 분석기는 미실행)")
         except UnicodeDecodeError as e:
             report["encoding_pass"] = False
             report["syntax_pass"] = False
@@ -441,12 +501,15 @@ def verify_file(file_path, run_tests=False, smoke=False, strict=False):
         overall_success = False
 
     # 4. 공통 구형 모델명 기계적 린터 검사
+    harness_root = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
     canon_target = os.path.realpath(file_path)
+    is_inside_harness = canon_target.startswith(harness_root + os.sep) or canon_target == harness_root
+    
     is_self_tool = (
         canon_target == os.path.realpath(__file__) or
         canon_target == os.path.realpath(os.path.join(script_dir, "model_sanitizer.py")) or
         canon_target == os.path.realpath(os.path.join(script_dir, "..", "SKILL.md")) or
-        os.path.basename(canon_target).startswith("test_")
+        (is_inside_harness and os.path.basename(canon_target).startswith("test_"))
     )
     
     if not is_self_tool and ext in (".py", ".md", ".txt", ".cs", ".html", ".css", ".js", ".ts", ".json"):

@@ -137,12 +137,13 @@ python scripts/model_sanitizer.py "/path/to/project_dir"
 
 We believe in engineering transparency. Please review the following limitations before relying on Synapse Harness in your workflows:
 
-1. **Python-Centric Static Analysis**:
-   - Comprehensive AST compilation (`py_compile`) and linter checks (`ruff`) are currently fully implemented for **Python only**.
-   - Other formats (`.json`, `.md`, `.js`, `.ts`, `.html`) are verified for UTF-8 integrity and syntax parsing (for JSON). Dedicated language linters (e.g. ESLint, TypeScript compiler) are not yet integrated into Stage 1.
-2. **Static Syntax vs. Opt-In Runtime Verification**:
-   - By default, `verify.py` performs static analysis without importing the target module or executing paired tests (note that external analyzers like ruff and mypy execute as host processes under user privileges).
-   - When explicitly opted-in via `--test`, it discovers and executes paired unit tests (`test_<name>.py`) using `pytest` or Python's built-in `unittest`. If no unit test exists or `--test` is omitted, runtime logic flaws cannot be determined without test coverage or Stage 2 reviewer critique.
+1. **Python 중심 정적 분석 및 언어별 검증 경계**:
+   - AST 격리 컴파일(`py_compile`) 및 린터 검사(`ruff`)는 현재 **Python에 완전하게 구현**되어 있습니다.
+   - `.json` 파일은 비표준 상수(`NaN`, `Infinity`)를 거부하는 엄격한 RFC 8259 규격을 적용하여 `syntax_pass: true`로 판정합니다.
+   - 기타 텍스트/마크다운/코드(`.md`, `.js`, `.ts`, `.html`)는 UTF-8 무결성(`encoding_pass: true`)을 검증하며, 언어 전용 AST 구문 분석기가 미실행되었음을 명확히 알리기 위해 `syntax_pass`는 `null`(`not_checked`)로 제공됩니다.
+2. **정적 분석 vs. 명시적 런타임 검증 경계**:
+   - 기본적으로 `verify.py`는 모듈 임포트나 테스트 코드 실행 없이 정적 분석만 수행합니다. (외부 도구인 ruff, mypy는 사용자 권한 호스트 프로세스로 실행됩니다.)
+   - 사용자가 명시적으로 `--test`를 지정한 경우, `pytest` 실행 시 구조화된 JUnit XML(`--junitxml`)을 필수로 파싱하여 터미널 텍스트 위장을 차단하며, XML 누락 시 텍스트 파서로의 폴백을 엄격히 금지합니다. 또한 전체 건너뛰기(all skipped)나 xfail/expected failures만 있는 경우는 실패로 처리하고 **최소 1개 이상의 순수 성공 테스트**가 확인되어야 PASS로 판정합니다.
 3. **Agent-Mediated Stages 2 & 3**:
    - Stage 1 runs autonomously as a standalone CLI tool.
    - Stages 2 and 3 require an agent environment (such as Antigravity, Claude, or custom LLM runners) interpreting `SKILL.md` to trigger adversarial reviews.
