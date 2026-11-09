@@ -24,7 +24,7 @@ A successful check does not guarantee that code is completely defect-free. Exter
 │  - Default: Pure static analysis (no smoke   │
 │    import or test execution by default)      │
 │  - Python compilation via isolated temp dir  │
-│  - Bytecode suppression (no __pycache__)     │
+│  - Bytecode suppression (no harness __pycache__) │
 │  - Ruff static analysis (enforcing --no-fix) │
 │  - Mypy static type verification (if avail)  │
 │  - Configured model-name string verification │
