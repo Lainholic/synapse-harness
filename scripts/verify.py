@@ -266,6 +266,8 @@ def run_unit_test(test_file, target_file=None):
     safe_path_args = ["-P"] if sys.version_info >= (3, 11) else []
 
     if has_pytest:
+        res = None
+        out = ""
         try:
             with tempfile.TemporaryDirectory() as tmp_dir:
                 xml_report = os.path.join(tmp_dir, "junit_report.xml")
@@ -274,12 +276,17 @@ def run_unit_test(test_file, target_file=None):
                 try:
                     runner_code = (
                         "import sys, os\n"
-                        "cwd = os.getcwd()\n"
-                        f"target_dir = {repr(target_dir)}\n"
-                        "sys.path = [p for p in sys.path if p not in ('', '.', cwd, target_dir)]\n"
+                        "def _norm(p):\n"
+                        "    try: return os.path.normcase(os.path.realpath(p))\n"
+                        "    except Exception: return p\n"
+                        "cwd_n = _norm(os.getcwd())\n"
+                        f"target_dir_n = _norm({repr(target_dir)}) if {repr(target_dir)} else None\n"
+                        "blocked = {'', '.', cwd_n}\n"
+                        "if target_dir_n: blocked.add(target_dir_n)\n"
+                        "sys.path = [p for p in sys.path if _norm(p) not in blocked and p not in ('', '.')]\n"
                         "import pytest\n"
-                        "if cwd not in sys.path: sys.path.insert(0, cwd)\n"
-                        "if target_dir and target_dir not in sys.path: sys.path.insert(0, target_dir)\n"
+                        "if cwd_n not in [_norm(p) for p in sys.path]: sys.path.insert(0, os.getcwd())\n"
+                        f"if {repr(target_dir)} and target_dir_n not in [_norm(p) for p in sys.path]: sys.path.insert(0, {repr(target_dir)})\n"
                         "sys.exit(pytest.main(sys.argv[1:]))\n"
                     )
                     cmd = [sys.executable] + safe_path_args + ["-c", runner_code, "-q", f"--junitxml={xml_report}", test_name]
@@ -336,20 +343,28 @@ def run_unit_test(test_file, target_file=None):
                 except Exception as e:
                     return {"runner": "pytest", "pass": False, "output": f"pytest XML 검증 예외 발생: {e}", "returncode": res.returncode}
         except OSError as e:
-            return {"runner": "pytest", "pass": False, "output": f"pytest 임시 디렉터리 격리 실패(생성/정리 OSError): {e}", "returncode": -1}
+            err_msg = f"pytest 임시 디렉터리 격리 실패(생성/정리 OSError): {e}"
+            if out:
+                err_msg = f"{err_msg}\n{out}"
+            return {"runner": "pytest", "pass": False, "output": err_msg, "returncode": res.returncode if res is not None else -1}
         except Exception as e:
-            return {"runner": "pytest", "pass": False, "output": f"pytest 임시 환경 예외 발생: {e}", "returncode": -1}
+            return {"runner": "pytest", "pass": False, "output": f"pytest 임시 환경 예외 발생: {e}", "returncode": res.returncode if res is not None else -1}
 
     # 2. pytest 미설치 시 파이썬 내장 unittest로 실행
     try:
         runner_code = (
             "import sys, os\n"
-            "cwd = os.getcwd()\n"
-            f"target_dir = {repr(target_dir)}\n"
-            "sys.path = [p for p in sys.path if p not in ('', '.', cwd, target_dir)]\n"
+            "def _norm(p):\n"
+            "    try: return os.path.normcase(os.path.realpath(p))\n"
+            "    except Exception: return p\n"
+            "cwd_n = _norm(os.getcwd())\n"
+            f"target_dir_n = _norm({repr(target_dir)}) if {repr(target_dir)} else None\n"
+            "blocked = {'', '.', cwd_n}\n"
+            "if target_dir_n: blocked.add(target_dir_n)\n"
+            "sys.path = [p for p in sys.path if _norm(p) not in blocked and p not in ('', '.')]\n"
             "import unittest\n"
-            "if cwd not in sys.path: sys.path.insert(0, cwd)\n"
-            "if target_dir and target_dir not in sys.path: sys.path.insert(0, target_dir)\n"
+            "if cwd_n not in [_norm(p) for p in sys.path]: sys.path.insert(0, os.getcwd())\n"
+            f"if {repr(target_dir)} and target_dir_n not in [_norm(p) for p in sys.path]: sys.path.insert(0, {repr(target_dir)})\n"
             "unittest.main(module=None, argv=[sys.argv[0]] + sys.argv[1:])\n"
         )
         cmd = [sys.executable] + safe_path_args + ["-c", runner_code, test_name]

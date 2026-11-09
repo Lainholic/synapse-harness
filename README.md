@@ -101,7 +101,9 @@ python scripts/verify.py "/path/to/target_file.py" --test
 ```
 
 > **Security Notice on Execution Boundaries:**  
-> By default, the verifier does not smoke-import the target or run its tests. External analyzers, their configuration and plugins, and the execution environment remain separate trust boundaries. Both `--test` and `--smoke` execute code with the current user's privileges; subprocesses and timeouts are helpful isolation barriers, but they are not security sandboxes. The harness suppresses its own bytecode and uses isolated temporary directories for compilation; external tools and test runners manage their own caches per their respective configurations. Use appropriate container or VM isolation when analyzing untrusted third-party code.
+> By default, the verifier does not smoke-import the target or run its tests. External analyzers, their configuration and plugins, and the execution environment remain separate trust boundaries. Both `--test` and `--smoke` execute code with the current user's privileges; subprocesses and timeouts are helpful isolation barriers, but they are not security sandboxes. The harness suppresses its own bytecode and uses isolated temporary directories for compilation; external tools and test runners manage their own caches per their respective configurations.
+>
+> *Output Parsing Trust Boundary:* When `--test` runs under pytest, reports are strictly validated using JUnit XML structure and tag-attribute consistency checks. Under fallback unittest, the parser rejects conflicting duplicate summary blocks and enforces strict token matching. However, because test execution runs code under user privileges, in-process code can tamper with standard streams or exit early. Use container or VM sandbox isolation when executing untrusted third-party code.
 
 Output is emitted in structured JSON (example snippet):
 ```json

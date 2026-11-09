@@ -505,7 +505,8 @@ class TestSynapseHarness(unittest.TestCase):
 
     def test_unit_test_pytest_runner_code_prioritizes_target_dir(self):
         # Even without pytest installed in the environment, verify that run_unit_test generates runner_code
-        # that explicitly purges cwd/target_dir and inserts target_dir at sys.path[0] before pytest.main
+        # that explicitly normalizes paths (_norm via realpath/normcase), purges aliases from sys.path,
+        # and inserts target_dir at sys.path[0] strictly before pytest.main is called.
         with patch("importlib.util.find_spec", return_value=True):
             with patch("subprocess.run") as mock_run:
                 captured_cmd = []
@@ -531,8 +532,16 @@ class TestSynapseHarness(unittest.TestCase):
                         runner_script = captured_cmd[i + 1]
                         break
                 self.assertIsNotNone(runner_script)
-                self.assertIn("if target_dir and target_dir not in sys.path: sys.path.insert(0, target_dir)", runner_script)
-                self.assertIn("pytest.main", runner_script)
+                self.assertIn("def _norm(p):", runner_script)
+                self.assertIn("os.path.normcase(os.path.realpath(p))", runner_script)
+                self.assertIn("sys.path = [p for p in sys.path if _norm(p) not in blocked", runner_script)
+                
+                # Assert execution order: sys.path.insert for target_dir must precede pytest.main
+                idx_insert = runner_script.find("sys.path.insert(0,")
+                idx_main = runner_script.find("pytest.main")
+                self.assertGreater(idx_insert, -1, "Target dir insertion must be present in runner_code")
+                self.assertGreater(idx_main, -1, "pytest.main must be present in runner_code")
+                self.assertLess(idx_insert, idx_main, "sys.path.insert for target_dir must strictly precede pytest.main")
 
     def test_verify_compile_tempdir_oserror_handled(self):
         # OSError during TemporaryDirectory creation in compile step must be caught and reported as structured JSON
@@ -599,7 +608,8 @@ class TestSynapseHarness(unittest.TestCase):
                 self.assertIn("pytest 임시 디렉터리 격리 실패(생성/정리 OSError)", res["output"])
 
     def test_unit_test_pytest_tempdir_cleanup_oserror_handled(self):
-        # TemporaryDirectory __exit__ cleanup failure (OSError) must also be cleanly caught
+        # TemporaryDirectory __exit__ cleanup failure (OSError) must be cleanly caught,
+        # and existing process output and returncode must be preserved if process completed
         class FailingCleanupTempDir:
             def __enter__(self):
                 self.name = tempfile.mkdtemp()
@@ -610,13 +620,16 @@ class TestSynapseHarness(unittest.TestCase):
                 raise OSError("Cleanup failed (file locked)")
 
         with patch("importlib.util.find_spec", return_value=True):
-            with patch("tempfile.TemporaryDirectory", side_effect=FailingCleanupTempDir):
-                sample_test = os.path.join(BASE_DIR, "tests", "sample_calc_test.py")
-                res = run_unit_test(sample_test)
-                self.assertFalse(res["pass"])
-                self.assertEqual(res["runner"], "pytest")
-                self.assertEqual(res["returncode"], -1)
-                self.assertIn("pytest 임시 디렉터리 격리 실패(생성/정리 OSError)", res["output"])
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="2 passed in 0.05s\n", stderr="")
+                with patch("tempfile.TemporaryDirectory", side_effect=FailingCleanupTempDir):
+                    sample_test = os.path.join(BASE_DIR, "tests", "sample_calc_test.py")
+                    res = run_unit_test(sample_test)
+                    self.assertFalse(res["pass"])
+                    self.assertEqual(res["runner"], "pytest")
+                    self.assertEqual(res["returncode"], 0, "Completed process returncode must be preserved upon cleanup OSError")
+                    self.assertIn("pytest 임시 디렉터리 격리 실패(생성/정리 OSError)", res["output"])
+                    self.assertIn("2 passed in 0.05s", res["output"], "Completed process output must be preserved upon cleanup OSError")
 
     def test_parse_pytest_xml_invalid_root_and_missing_tests(self):
         # 1. Invalid root tag (e.g. <unexpected>) must be rejected
