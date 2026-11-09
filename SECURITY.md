@@ -2,20 +2,20 @@
 
 ## Reporting a Vulnerability
 
-If you discover a potential security issue in Synapse Harness, please do not disclose it publicly in an open GitHub issue.
+If you discover a potential security vulnerability in Synapse Harness, please do not disclose it publicly in an issue or pull request.
 
-Instead, please send an advisory email directly to:
-- **Contact**: `lainholic@users.noreply.github.com`
+Please report vulnerabilities through **GitHub Private Vulnerability Reporting**:
+1. Navigate to the repository's **Security** tab.
+2. Under "Reporting", click **Report a vulnerability**.
+3. Fill in the advisory form with:
+   - A clear description of the vulnerability.
+   - Steps or a minimal proof-of-concept to reproduce the behavior.
+   - Potential impact and suggested mitigations.
 
-Please include:
-1. A clear description of the vulnerability.
-2. Steps or a minimal proof-of-concept to reproduce the behavior.
-3. Potential impact and suggested mitigations.
+This ensures the report remains strictly confidential until a patch is developed and released.
 
-We will review reports promptly and collaborate with you on a responsible fix and release timeline.
+## Execution and Trust Boundaries
 
-## Data Boundary Policy
-
-Synapse Harness Stage 1 runs entirely locally on your machine and never transmits code, logs, or credentials over the network.
-
-When utilizing Stage 2 with external AI models or subagents, be mindful of your organizational security boundaries, as code snippets may be routed through third-party model APIs depending on your agent runtime configuration.
+- **Static Analysis Mode (Default)**: Executes `py_compile` and, when available, local linters (`ruff`, `mypy`) under the current user's operating system privileges. The harness itself contains no telemetry and transmits no data over the network.
+- **Dynamic Options (`--smoke`, `--test`)**: Invoking `--smoke` (importing the target module) or `--test` (running paired test suites) executes target code directly with your user privileges.
+- **Isolation Warning**: Timeouts and subprocesses provide fault isolation, but they are not cryptographic or operating system security sandboxes. When analyzing untrusted third-party code, execute the harness within a container or isolated virtual machine with network restrictions.

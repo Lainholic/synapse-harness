@@ -105,7 +105,7 @@ def run_unit_test(test_file):
         return {"runner": "unittest", "pass": False, "output": f"unittest 실행 실패: {e}", "returncode": -1}
 
 def run_smoke_import(file_path):
-    """모듈을 서브프로세스에서 안전하게 임포트하여 즉각적인 초기화 런타임 크래시를 검증합니다."""
+    """모듈을 서브프로세스에서 임포트하여 즉각적인 초기화 런타임 크래시를 검증합니다."""
     # 경로를 문자열에 직접 삽입하지 않고 sys.argv[1]로 안전하게 전달
     code = (
         "import sys, importlib.util;"
@@ -132,7 +132,7 @@ def run_smoke_import(file_path):
     except Exception as e:
         return {"pass": False, "output": f"스모크 임포트 실패: {e}", "returncode": -1}
 
-def verify_file(file_path, run_tests=False, smoke=False):
+def verify_file(file_path, run_tests=False, smoke=False, strict=False):
     if not isinstance(file_path, str) or not file_path.strip():
         return {"success": False, "error": "유효한 파일 경로가 필요합니다."}
 
@@ -155,6 +155,7 @@ def verify_file(file_path, run_tests=False, smoke=False):
         "type_check_status": "unsupported",
         "smoke_status": "skipped",
         "test_status": "skipped",
+        "model_scan_status": "skipped",
         "linter_details": "",
         "details": []
     }
@@ -163,14 +164,24 @@ def verify_file(file_path, run_tests=False, smoke=False):
 
     # 1. 파이썬 문법, 린터, 타입, 옵션별 런타임 검사
     if ext == ".py":
-        report["encoding_pass"] = True
+        # 인코딩 검사
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                f.read()
+            report["encoding_pass"] = True
+        except UnicodeDecodeError as e:
+            report["encoding_pass"] = False
+            report["syntax_pass"] = False
+            report["details"].append(f"UTF-8 디코딩 오류: {str(e)}")
+            return {"success": False, "report": report}
+
         # __pycache__ 잔여 방지를 위해 임시 디렉터리에서 컴파일 수행
         with tempfile.TemporaryDirectory() as tmp_dir:
             temp_cfile = os.path.join(tmp_dir, "temp_check.pyc")
             try:
                 py_compile.compile(file_path, cfile=temp_cfile, doraise=True)
                 report["syntax_pass"] = True
-                report["details"].append("py_compile 구문 검사 PASS (오염 없는 격리 컴파일)")
+                report["details"].append("py_compile 구문 검사 PASS (격리 컴파일 완료)")
             except py_compile.PyCompileError as e:
                 report["syntax_pass"] = False
                 report["details"].append(f"구문 오류(SyntaxError): {str(e)}")
@@ -186,7 +197,7 @@ def verify_file(file_path, run_tests=False, smoke=False):
             )
             if res.returncode == 0:
                 report["linter_status"] = "pass"
-                report["details"].append("ruff 정적 린터 PASS (코드 무결)")
+                report["details"].append("ruff 정적 린터 PASS")
             else:
                 report["linter_status"] = "failed"
                 overall_success = False
@@ -195,7 +206,10 @@ def verify_file(file_path, run_tests=False, smoke=False):
                 report["details"].append(f"ruff 지적 사항 (ExitCode {res.returncode}):\n{err_output}")
         except FileNotFoundError:
             report["linter_status"] = "not_installed"
-            report["details"].append("ruff 미설치 (내장 py_compile 검사로 갈음)")
+            report["details"].append("ruff 미설치 (내장 py_compile 검사로 진행)")
+            if strict:
+                overall_success = False
+                report["details"].append("[엄격 모드 FAIL] ruff 린터가 설치되지 않았습니다.")
         except subprocess.TimeoutExpired:
             report["linter_status"] = "timeout"
             overall_success = False
@@ -223,6 +237,9 @@ def verify_file(file_path, run_tests=False, smoke=False):
                 report["details"].append(f"mypy 타입 검사 지적:\n{m_err}")
         except FileNotFoundError:
             report["type_check_status"] = "not_installed"
+            if strict:
+                overall_success = False
+                report["details"].append("[엄격 모드 FAIL] mypy 타입 검사기가 설치되지 않았습니다.")
         except subprocess.TimeoutExpired:
             report["type_check_status"] = "timeout"
             overall_success = False
@@ -237,7 +254,7 @@ def verify_file(file_path, run_tests=False, smoke=False):
             smoke_res = run_smoke_import(file_path)
             if smoke_res["pass"]:
                 report["smoke_status"] = "pass"
-                report["details"].append("스모크 임포트 실행 검증 PASS (런타임 초기화 크래시 없음)")
+                report["details"].append("스모크 임포트 실행 검증 PASS (런타임 크래시 없음)")
             else:
                 report["smoke_status"] = "failed"
                 overall_success = False
@@ -261,7 +278,8 @@ def verify_file(file_path, run_tests=False, smoke=False):
                     report["details"].append(f"[단위 테스트 FAIL] ({test_res['runner']}):\n{test_res['output']}")
             else:
                 report["test_status"] = "not_found"
-                report["details"].append("대응하는 단위 테스트 파일(test_*.py)을 찾지 못했습니다.")
+                overall_success = False  # 사용자가 명시적으로 --test를 요청했으나 테스트가 없으므로 불완전/실패 처리
+                report["details"].append("[단위 테스트 FAIL] 대응하는 단위 테스트 파일(test_*.py)을 찾지 못하여 테스트를 수행할 수 없습니다.")
 
     # 2. JSON 파싱 검사 (문법 파싱)
     elif ext == ".json":
@@ -318,24 +336,31 @@ def verify_file(file_path, run_tests=False, smoke=False):
         os.path.basename(canon_target).startswith("test_")
     )
     
-    if scan_text and not is_self_tool and ext in (".py", ".md", ".txt", ".cs", ".html", ".css", ".js", ".ts", ".json"):
-        try:
-            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                content_to_check = f.read()
-            legacy_findings = scan_text(content_to_check)
-            if legacy_findings:
+    if not is_self_tool and ext in (".py", ".md", ".txt", ".cs", ".html", ".css", ".js", ".ts", ".json"):
+        if scan_text:
+            try:
+                with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                    content_to_check = f.read()
+                legacy_findings = scan_text(content_to_check)
+                if legacy_findings:
+                    overall_success = False
+                    report["model_scan_status"] = "failed"
+                    report["details"].append(
+                        f"[구형 모델명 감지 FAIL] 레거시 모델명이 감지되었습니다: {legacy_findings}. "
+                        f"python scripts/model_sanitizer.py --fix \"{file_path}\" 로 최신 규격(Gemini 3.8/4 Argon, Claude 5.5, GPT-5.2)으로 치환하십시오."
+                    )
+                else:
+                    report["model_scan_status"] = "pass"
+                    report["details"].append("구형 모델명 기계 검사 PASS (0개 확인)")
+            except Exception as e:
                 overall_success = False
-                report["linter_status"] = "failed"
-                report["details"].append(
-                    f"[구형 모델명 감지 FAIL] 레거시 모델명이 감지되었습니다: {legacy_findings}. "
-                    f"python scripts/model_sanitizer.py --fix \"{file_path}\" 로 최신 규격(Gemini 3.8/4 Argon, Claude 5.5, GPT-5.2)으로 치환하십시오."
-                )
-            else:
-                report["details"].append("구형 모델명 기계 검사 PASS (0개 확인)")
-        except Exception as e:
-            overall_success = False
-            report["linter_status"] = "error"
-            report["details"].append(f"구형 모델명 검사 중 예외 발생: {str(e)}")
+                report["model_scan_status"] = "error"
+                report["details"].append(f"구형 모델명 검사 중 예외 발생: {str(e)}")
+        else:
+            report["model_scan_status"] = "unavailable"
+            report["details"].append("model_sanitizer 모듈을 찾을 수 없어 구형 모델명 검사를 건너뛰었습니다.")
+            if strict:
+                overall_success = False
 
     return {"success": overall_success, "report": report}
 
@@ -344,9 +369,10 @@ if __name__ == "__main__":
     parser.add_argument("target", help="검증할 대상 파일 경로")
     parser.add_argument("--test", action="store_true", help="명시적 옵션: 대응하는 단위 테스트(test_*.py)를 탐색하여 안전하게 실행합니다.")
     parser.add_argument("--smoke", action="store_true", help="명시적 옵션: 격리된 서브프로세스에서 모듈 임포트를 시험하여 초기화 크래시를 검증합니다.")
+    parser.add_argument("--strict", action="store_true", help="엄격 모드: ruff, mypy 등 외부 분석 도구 미설치 시 실패로 처리합니다.")
     args = parser.parse_args()
 
-    result = verify_file(args.target, run_tests=args.test, smoke=args.smoke)
+    result = verify_file(args.target, run_tests=args.test, smoke=args.smoke, strict=args.strict)
     print(json.dumps(result, indent=2, ensure_ascii=False))
     
     if not result.get("success"):

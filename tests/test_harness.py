@@ -37,6 +37,20 @@ class TestSynapseHarness(unittest.TestCase):
         res = verify_file(fake_path)
         self.assertFalse(res["success"], "Nonexistent file must fail.")
 
+    def test_verify_missing_test_fails_when_test_flag_requested(self):
+        # sample_valid.py has no paired test_sample_valid.py
+        sample_path = os.path.join(BASE_DIR, "tests", "sample_valid.py")
+        res = verify_file(sample_path, run_tests=True)
+        self.assertFalse(res["success"], "Requesting tests when none exist must fail overall_success.")
+        self.assertEqual(res["report"]["test_status"], "not_found")
+
+    def test_verify_paired_test_passes(self):
+        # sample_calc.py has paired test_sample_calc.py
+        sample_path = os.path.join(BASE_DIR, "tests", "sample_calc.py")
+        res = verify_file(sample_path, run_tests=True)
+        self.assertTrue(res["success"], f"Paired test should pass: {res}")
+        self.assertEqual(res["report"]["test_status"], "pass")
+
     def test_sanitizer_scan(self):
         # Dynamically build legacy string to avoid self-triggering static linter on test files
         sample_text = f"{'Gemini'} {'1.5'} {'Pro'} and {'Claude'} {'3.5'} {'Sonnet'}."

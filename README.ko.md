@@ -84,13 +84,16 @@ git clone https://github.com/Lainholic/synapse-harness.git .cursor/skills/synaps
 # synapse-harness 저장소 디렉터리로 이동
 cd path/to/synapse-harness
 
-# 기본 검증: 안전한 정적 분석 (구문 및 린터 검사, 코드 실행 없음)
+# 기본 검증: 정적 분석 (대상 모듈 임포트/실행 없이 구문, 린터, 타입 검사 수행)
 python scripts/verify.py "/path/to/target_file.py"
+
+# 선택적 실행: 엄격 모드 (ruff, mypy 등 외부 분석 도구 미설치 시 실패 처리)
+python scripts/verify.py "/path/to/target_file.py" --strict
 
 # 선택적 실행: 스모크 임포트 검증 (모듈 초기화 런타임 크래시 여부 검출)
 python scripts/verify.py "/path/to/target_file.py" --smoke
 
-# 선택적 실행: 단위 테스트 실행 (대응하는 test_<name>.py 격리 실행)
+# 선택적 실행: 단위 테스트 실행 (대응하는 test_<name>.py 격리 실행, 테스트 미발견 시 실패 처리)
 python scripts/verify.py "/path/to/target_file.py" --test
 ```
 

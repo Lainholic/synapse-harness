@@ -87,13 +87,16 @@ Run syntax, encoding, and lint checks against a target file:
 # Navigate to the synapse-harness directory
 cd path/to/synapse-harness
 
-# Default: Safe static analysis (Syntax & lint check, zero code execution)
+# Default: Static analysis (Syntax, lint, and type check without importing or executing target module)
 python scripts/verify.py "/path/to/target_file.py"
+
+# Opt-in: Strict mode (fails if external linters like ruff/mypy are not installed)
+python scripts/verify.py "/path/to/target_file.py" --strict
 
 # Opt-in: Runtime smoke-test (verifies clean module import without initialization crashes)
 python scripts/verify.py "/path/to/target_file.py" --smoke
 
-# Opt-in: Unit test execution (discovers and runs paired test_<name>.py)
+# Opt-in: Unit test execution (discovers and runs paired test_<name>.py; fails if no test is found)
 python scripts/verify.py "/path/to/target_file.py" --test
 ```
 
