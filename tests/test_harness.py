@@ -503,6 +503,37 @@ class TestSynapseHarness(unittest.TestCase):
                 self.assertEqual(res_unittest["runner"], "unittest")
                 self.assertTrue(res_unittest["pass"], f"Unittest runner must also prioritize target_dir: {res_unittest}")
 
+    def test_unit_test_pytest_runner_code_prioritizes_target_dir(self):
+        # Even without pytest installed in the environment, verify that run_unit_test generates runner_code
+        # that explicitly purges cwd/target_dir and inserts target_dir at sys.path[0] before pytest.main
+        with patch("importlib.util.find_spec", return_value=True):
+            with patch("subprocess.run") as mock_run:
+                captured_cmd = []
+                def fake_run(cmd, **kwargs):
+                    captured_cmd.extend(cmd)
+                    for arg in cmd:
+                        if arg.startswith("--junitxml="):
+                            report_file = arg.split("=", 1)[1]
+                            with open(report_file, "w", encoding="utf-8") as f:
+                                f.write('<testsuite tests="1"><testcase name="t1"/></testsuite>')
+                    return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="1 passed\n", stderr="")
+
+                mock_run.side_effect = fake_run
+                sample_test = os.path.join(BASE_DIR, "tests", "sample_calc_test.py")
+                sample_target = os.path.join(BASE_DIR, "scripts", "calc.py")
+                res = run_unit_test(sample_test, target_file=sample_target)
+                self.assertTrue(res["pass"])
+                self.assertEqual(res["runner"], "pytest")
+
+                runner_script = None
+                for i, arg in enumerate(captured_cmd):
+                    if arg == "-c" and i + 1 < len(captured_cmd):
+                        runner_script = captured_cmd[i + 1]
+                        break
+                self.assertIsNotNone(runner_script)
+                self.assertIn("if target_dir and target_dir not in sys.path: sys.path.insert(0, target_dir)", runner_script)
+                self.assertIn("pytest.main", runner_script)
+
     def test_verify_compile_tempdir_oserror_handled(self):
         # OSError during TemporaryDirectory creation in compile step must be caught and reported as structured JSON
         with patch("tempfile.TemporaryDirectory", side_effect=OSError("Disk full / permission denied")):
@@ -654,6 +685,7 @@ class TestSynapseHarness(unittest.TestCase):
                     self.assertEqual(res3["runner"], "pytest")
                     self.assertEqual(res3["returncode"], 0)
                     self.assertIn("[JUnit XML 접근 오류 (OSError)]", res3["output"])
+                    self.assertIn("1 passed", res3["output"])
 
                 # 5. stat stage FileNotFoundError -> must classify as XML missing
                 with patch("os.stat", side_effect=FileNotFoundError("no xml")):
@@ -662,6 +694,16 @@ class TestSynapseHarness(unittest.TestCase):
                     self.assertEqual(res4["runner"], "pytest")
                     self.assertEqual(res4["returncode"], 0)
                     self.assertIn("[JUnit XML 누락 FAIL]", res4["output"])
+
+    def test_unittest_parse_multiple_summary_blocks_rejected(self):
+        # When trailing forged summary block is appended (e.g. Ran 1 test... OK after OK (skipped=1)), must reject
+        output_with_forgery = (
+            "Ran 1 test in 0.001s\n\nOK (skipped=1)\n"
+            "Ran 1 test in 0.001s\n\nOK"
+        )
+        ok, msg = parse_unittest_output(0, output_with_forgery)
+        self.assertFalse(ok)
+        self.assertIn("요약 충돌/위조 거부", msg)
 
     def test_unit_test_subprocess_spawn_filenotfound_handled(self):
         # subprocess.run spawn failure (FileNotFoundError) must be cleanly reported without UnboundLocalError

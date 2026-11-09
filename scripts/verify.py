@@ -185,11 +185,16 @@ def parse_unittest_output(returncode, out):
     matches = list(summary_blocks)
     if not matches:
         return False, f"[요약 누락] 유효한 unittest 실행 요약 블록(^Ran N tests...$ + ^OK/FAILED$)이 없습니다:\n{out}"
-        
-    last_match = matches[-1]
-    ran_count = int(last_match.group(1))
-    full_status = last_match.group(2)
-    detail = last_match.group("detail") or ""
+
+    # 출력 내에 다중 요약 블록이 존재하면 위조 또는 비정상 출력 충돌로 간주하여 즉각 거부
+    if len(matches) > 1:
+        return False, f"[요약 충돌/위조 거부] 출력 내에 {len(matches)}개의 unittest 요약 블록이 검출되어 결과를 신뢰할 수 없습니다:\n{out}"
+
+    # 단일 블록 검증
+    target_match = matches[0]
+    ran_count = int(target_match.group(1))
+    full_status = target_match.group(2)
+    detail = target_match.group("detail") or ""
     
     if ran_count == 0:
         return False, f"실행된 테스트 케이스가 0개입니다:\n{out}"
