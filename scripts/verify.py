@@ -133,64 +133,25 @@ def parse_pytest_xml(xml_path):
     except Exception as e:
         return False, f"XML 파싱 또는 검증 예외: {e}"
 
-def parse_pytest_output(returncode, out):
-    """pytest 터미널 출력에서 공식 요약 라인(summary line)만을 역순 탐색하여 엄격히 판정합니다."""
-    lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
-    if not lines:
-        return False, "[테스트 미실행] 출력이 비어 있습니다."
-        
-    kw = r"(?:passed|skipped|failed|errors?|xfailed|xpassed|warnings?)"
-    item = rf"\d+\s+{kw}"
-    summary_pattern = re.compile(
-        rf"^(?:=+\s*(?:{item}(?:,\s*)?)+\s+in\s+[\d\.]+s\s*=+"
-        rf"|(?:{item}(?:,\s*)?)+\s+in\s+[\d\.]+s"
-        rf"|no tests ran in\s+[\d\.]+s)$"
-    )
-    
-    summary_line = None
-    for ln in reversed(lines):
-        if summary_pattern.match(ln):
-            summary_line = ln
-            break
-            
-    if not summary_line:
-        return False, f"[요약 누락] 유효한 pytest 실행 요약 라인을 찾을 수 없습니다:\n{out}"
-        
-    # 공식 요약 라인 내에서 판정 (실패/오류 카운터 존재 시 즉시 실패)
-    m_pass = re.search(r"\b([1-9]\d*)\s+passed\b", summary_line)
-    m_fail = re.search(r"\b([1-9]\d*)\s+(?:failed|errors?)\b", summary_line)
-    m_zero_pass = re.search(r"\b0\s+passed\b", summary_line)
-    has_no_tests = "no tests ran" in summary_line
-    
-    # 모순되거나 실패 카운터가 있는 경우 배제
-    if m_fail:
-        return False, f"[테스트 실패] 요약 라인에 실패/오류가 보고되었습니다: {summary_line}"
-        
-    passed = (returncode == 0) and bool(m_pass) and not bool(m_zero_pass) and not has_no_tests
-    return passed, out if passed else f"[테스트 미실행 또는 실패]\n{out}"
-
 def parse_unittest_output(returncode, out):
-    """unittest 출력의 엄격한 요약 블록을 파싱하여 상태 및 카운터 모순을 정밀 검증합니다."""
+    """unittest 출력의 요약 블록을 파싱하여 상태 및 카운터 정합성을 검증합니다."""
     lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
     if not lines:
         return False, "[테스트 미실행] 출력이 비어 있습니다."
 
-    # 줄 시작(^)과 줄 끝($)을 엄격히 강제하며 요약 블록 파싱
+    # 줄 시작(^)과 줄 끝($)을 강제하며 요약 블록 파싱
     pattern = re.compile(
         r"^Ran\s+(\d+)\s+tests?\s+in\s+[\d\.]+s\s*$\n"
         r"^(OK(?:\s*\((?P<detail>[a-zA-Z0-9_=\s,]+)\))?|FAILED(?:\s*\(.*?\))?)\s*$",
         re.MULTILINE
     )
-    summary_blocks = pattern.finditer(out)
-    matches = list(summary_blocks)
+    matches = list(pattern.finditer(out))
     if not matches:
         return False, f"[요약 누락] 유효한 unittest 실행 요약 블록(^Ran N tests...$ + ^OK/FAILED$)이 없습니다:\n{out}"
 
-    # 출력 내에 다중 요약 블록이 존재하면 위조 또는 비정상 출력 충돌로 간주하여 즉각 거부
     if len(matches) > 1:
         return False, f"[요약 충돌/위조 거부] 출력 내에 {len(matches)}개의 unittest 요약 블록이 검출되어 결과를 신뢰할 수 없습니다:\n{out}"
 
-    # 단일 블록 검증
     target_match = matches[0]
     ran_count = int(target_match.group(1))
     full_status = target_match.group(2)
@@ -202,27 +163,21 @@ def parse_unittest_output(returncode, out):
     if not full_status.startswith("OK"):
         return False, f"[테스트 실패]\n{out}"
 
-    # OK 괄호 상세 내용 검증 (엄격한 화이트리스트 토큰 파서)
     if detail:
-        # 연속 쉼표, 선행/후행 쉼표 등 빈 토큰 존재 시 즉각 거부
         raw_tokens = detail.split(",")
         if any(not t.strip() for t in raw_tokens):
             return False, f"[형식 오류] unittest 요약 괄호 내에 빈 토큰 또는 연속 쉼표가 포함되어 있습니다: '{detail}'"
 
         tokens = [t.strip() for t in raw_tokens]
-        if not tokens:
-            return False, f"[형식 오류] OK 상태 괄호 내용이 올바르지 않습니다: '{detail}'"
-
         counters = {}
         token_pattern = re.compile(r"^(skipped|expected failures|unexpected successes)=(\d+)$")
         
         for t in tokens:
             m = token_pattern.match(t)
             if not m:
-                return False, f"[허용되지 않은 토큰] unittest 요약 괄호 내에 비표준 또는 모순된 항목이 포함되어 있습니다: '{t}' in '{detail}'"
+                return False, f"[허용되지 않은 토큰] unittest 요약 괄호 내에 비표준 항목이 포함되어 있습니다: '{t}' in '{detail}'"
             key = m.group(1)
             val = int(m.group(2))
-            
             if key in counters:
                 return False, f"[중복 키 검출] unittest 요약 괄호 내에 중복된 카운터 키가 존재합니다: '{key}' in '{detail}'"
             counters[key] = val
@@ -234,7 +189,6 @@ def parse_unittest_output(returncode, out):
         if unexpected_count > 0:
             return False, f"예상치 못한 성공(unexpected successes={unexpected_count})이 발생하였습니다:\n{out}"
 
-        # 유효 순수 성공 테스트 검증 (전부 skip 또는 expected failures만 있는 경우 거부)
         pure_passed = ran_count - skipped_count - expected_count
         if pure_passed <= 0:
             return False, f"실행된 테스트 중 순수 통과(passed)한 테스트가 0개입니다 (ran={ran_count}, skipped={skipped_count}, expected={expected_count}):\n{out}"
@@ -243,9 +197,7 @@ def parse_unittest_output(returncode, out):
     return passed, out if passed else f"[테스트 실패 (종료코드={returncode})]\n{out}"
 
 def run_unit_test(test_file, target_file=None):
-    """동일한 Python 인터프리터의 pytest(JUnit XML 필수) 또는 unittest로 테스트 파일을 격리 실행합니다.
-    로컬 디렉터리의 모듈 하이재킹을 방어하면서도, 대상 모듈(target_file)의 상위 디렉터리를 러너 로드 후 안전하게 경로에 주입합니다.
-    """
+    """동일한 Python 인터프리터의 pytest(JUnit XML) 또는 unittest로 테스트 파일을 격리 실행합니다."""
     test_dir = os.path.dirname(os.path.abspath(test_file))
     test_name = os.path.basename(test_file)
     target_dir = os.path.dirname(os.path.abspath(target_file)) if target_file else ""
@@ -254,7 +206,7 @@ def run_unit_test(test_file, target_file=None):
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["PYTHONSAFEPATH"] = "1"
 
-    # 1. pytest 가용 여부 사전 검사
+    # pytest 가용 여부 사전 검사
     has_pytest = False
     try:
         import importlib.util
@@ -262,36 +214,30 @@ def run_unit_test(test_file, target_file=None):
     except Exception:
         has_pytest = False
 
-    # Python 3.11+ 격리 플래그 (-P: sys.path[0]에 현재 디렉터리 자동 삽입 방지)
     safe_path_args = ["-P"] if sys.version_info >= (3, 11) else []
 
     if has_pytest:
-        res = None
-        out = ""
-        last_process_error = None
-        last_xml_diagnostic = None
         try:
             with tempfile.TemporaryDirectory() as tmp_dir:
                 xml_report = os.path.join(tmp_dir, "junit_report.xml")
                 
-                # 1) pytest 프로세스 실행 구간 (프로세스 시작 실패, 타임아웃 격리)
+                runner_code = (
+                    "import sys, os\n"
+                    "def _norm(p):\n"
+                    "    try: return os.path.normcase(os.path.realpath(p))\n"
+                    "    except Exception: return p\n"
+                    "cwd_n = _norm(os.getcwd())\n"
+                    f"target_dir_n = _norm({repr(target_dir)}) if {repr(target_dir)} else None\n"
+                    "blocked = {'', '.', cwd_n}\n"
+                    "if target_dir_n: blocked.add(target_dir_n)\n"
+                    "sys.path = [p for p in sys.path if _norm(p) not in blocked and p not in ('', '.')]\n"
+                    "import pytest\n"
+                    "if cwd_n not in [_norm(p) for p in sys.path]: sys.path.insert(0, os.getcwd())\n"
+                    f"if {repr(target_dir)} and target_dir_n not in [_norm(p) for p in sys.path]: sys.path.insert(0, {repr(target_dir)})\n"
+                    "sys.exit(pytest.main(sys.argv[1:]))\n"
+                )
+                cmd = [sys.executable] + safe_path_args + ["-c", runner_code, "-q", f"--junitxml={xml_report}", test_name]
                 try:
-                    runner_code = (
-                        "import sys, os\n"
-                        "def _norm(p):\n"
-                        "    try: return os.path.normcase(os.path.realpath(p))\n"
-                        "    except Exception: return p\n"
-                        "cwd_n = _norm(os.getcwd())\n"
-                        f"target_dir_n = _norm({repr(target_dir)}) if {repr(target_dir)} else None\n"
-                        "blocked = {'', '.', cwd_n}\n"
-                        "if target_dir_n: blocked.add(target_dir_n)\n"
-                        "sys.path = [p for p in sys.path if _norm(p) not in blocked and p not in ('', '.')]\n"
-                        "import pytest\n"
-                        "if cwd_n not in [_norm(p) for p in sys.path]: sys.path.insert(0, os.getcwd())\n"
-                        f"if {repr(target_dir)} and target_dir_n not in [_norm(p) for p in sys.path]: sys.path.insert(0, {repr(target_dir)})\n"
-                        "sys.exit(pytest.main(sys.argv[1:]))\n"
-                    )
-                    cmd = [sys.executable] + safe_path_args + ["-c", runner_code, "-q", f"--junitxml={xml_report}", test_name]
                     res = subprocess.run(
                         cmd,
                         cwd=test_dir,
@@ -302,70 +248,49 @@ def run_unit_test(test_file, target_file=None):
                     )
                     out = (res.stdout.strip() + "\n" + res.stderr.strip()).strip()
                 except subprocess.TimeoutExpired:
-                    last_process_error = "pytest 실행 시간 초과 (15초)"
-                    return {"runner": "pytest", "pass": False, "output": last_process_error, "returncode": -1}
+                    return {"runner": "pytest", "pass": False, "output": "pytest 실행 시간 초과 (15초)", "returncode": -1}
                 except FileNotFoundError as e:
-                    last_process_error = f"pytest 프로세스 시작 실패 (실행 경로 누락): {e}"
-                    return {"runner": "pytest", "pass": False, "output": last_process_error, "returncode": -1}
+                    return {"runner": "pytest", "pass": False, "output": f"pytest 프로세스 시작 실패 (실행 경로 누락): {e}", "returncode": -1}
                 except Exception as e:
-                    last_process_error = f"pytest 실행 실패: {e}"
-                    return {"runner": "pytest", "pass": False, "output": last_process_error, "returncode": -1}
+                    return {"runner": "pytest", "pass": False, "output": f"pytest 실행 실패: {e}", "returncode": -1}
 
-                # 2) JUnit XML 파일 상태 검사 및 파싱 구간 (XML 누락과 권한 오류 정밀 분기)
                 try:
                     st = os.stat(xml_report)
                     if st.st_size == 0:
-                        last_xml_diagnostic = f"[JUnit XML 누락 FAIL] pytest 보고서 XML 파일 크기가 0입니다:\n{out}"
                         return {
                             "runner": "pytest",
                             "pass": False,
-                            "output": last_xml_diagnostic,
+                            "output": f"[JUnit XML 누락 FAIL] pytest 보고서 XML 파일 크기가 0입니다:\n{out}",
                             "returncode": res.returncode
                         }
 
                     xml_pass, xml_msg = parse_pytest_xml(xml_report)
-                    final_pass = (res.returncode == 0) and bool(xml_pass)
-                    final_out = out if (xml_pass and res.returncode == 0) else f"[JUnit XML 검증 실패]\n{xml_msg}\n{out}"
-                    if not final_pass:
-                        last_xml_diagnostic = final_out
                     return {
                         "runner": "pytest",
-                        "pass": final_pass,
-                        "output": final_out,
+                        "pass": (res.returncode == 0) and bool(xml_pass),
+                        "output": out if (xml_pass and res.returncode == 0) else f"[JUnit XML 검증 실패]\n{xml_msg}\n{out}",
                         "returncode": res.returncode
                     }
                 except FileNotFoundError:
-                    # XML 파일 부재 또는 stat 후 파싱 시점 소실(TOCTOU)은 일관되게 XML 누락으로 분류
-                    last_xml_diagnostic = f"[JUnit XML 누락 FAIL] pytest 보고서 XML이 존재하지 않습니다:\n{out}"
                     return {
                         "runner": "pytest",
                         "pass": False,
-                        "output": last_xml_diagnostic,
+                        "output": f"[JUnit XML 누락 FAIL] pytest 보고서 XML이 존재하지 않습니다:\n{out}",
                         "returncode": res.returncode
                     }
                 except OSError as e:
-                    # XML 파일 접근/읽기 오류 (권한 부족 등) 발생 시 종료코드와 프로세스 출력을 보존하여 보고
-                    last_xml_diagnostic = f"[JUnit XML 접근 오류 (OSError)]\n{e}\n{out}"
                     return {
                         "runner": "pytest",
                         "pass": False,
-                        "output": last_xml_diagnostic,
+                        "output": f"[JUnit XML 접근 오류 (OSError)]\n{e}\n{out}",
                         "returncode": res.returncode
                     }
                 except Exception as e:
-                    last_xml_diagnostic = f"pytest XML 검증 예외 발생: {e}"
-                    return {"runner": "pytest", "pass": False, "output": last_xml_diagnostic, "returncode": res.returncode}
+                    return {"runner": "pytest", "pass": False, "output": f"pytest XML 검증 예외 발생: {e}", "returncode": res.returncode}
         except OSError as e:
-            err_msg = f"pytest 임시 디렉터리 격리 실패(생성/정리 OSError): {e}"
-            if last_process_error:
-                err_msg = f"{err_msg}\n[선행 프로세스 오류]\n{last_process_error}"
-            if last_xml_diagnostic:
-                err_msg = f"{err_msg}\n[선행 XML 진단]\n{last_xml_diagnostic}"
-            elif out:
-                err_msg = f"{err_msg}\n[프로세스 출력]\n{out}"
-            return {"runner": "pytest", "pass": False, "output": err_msg, "returncode": res.returncode if res is not None else -1}
+            return {"runner": "pytest", "pass": False, "output": f"pytest 임시 디렉터리 격리 실패(생성/정리 OSError): {e}", "returncode": -1}
         except Exception as e:
-            return {"runner": "pytest", "pass": False, "output": f"pytest 임시 환경 예외 발생: {e}", "returncode": res.returncode if res is not None else -1}
+            return {"runner": "pytest", "pass": False, "output": f"pytest 임시 환경 예외 발생: {e}", "returncode": -1}
 
     # 2. pytest 미설치 시 파이썬 내장 unittest로 실행
     try:
